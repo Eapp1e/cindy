@@ -1527,6 +1527,11 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       streamFailed = true;
       streamError = error;
     }
+    // RPC 的限额拒绝可能先到、没有原生终态；流结束或抛错都不能抢先作废切换入口。
+    await waitForQuotaFailureDelivery(run).catch(error => {
+      if (!streamFailed) streamError = error;
+      streamFailed = true;
+    });
     // 受邀者的任务按组分到了本机这一台、一轮进行中本机的 Agent 意外结束(进程退出、事件流中断)：与组内电脑上的
     // 任务意外结束一样可以换一台——凭证排在收尾前面，收尾按出错处理，受邀者那边才会把这一轮当作失败。
     const midTurn = run.turnRunning === true && lastEventType !== 'done';
@@ -1671,6 +1676,16 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     return pending.delivery;
   }
 
+  /** 只供被动结束等待；显式关闭仍直接走 finishRun，不等待组选下一台。 */
+  async function waitForQuotaFailureDelivery(run: Run): Promise<void> {
+    let pending = run.quotaFailure;
+    while (!run.closing && pending) {
+      await pending.delivery;
+      if (run.quotaFailure === pending) return;
+      pending = run.quotaFailure;
+    }
+  }
+
   /**
    * 受邀者亲自接手(发消息、重试、换模型)后的这次发送：这个任务这一轮已经换下来的电脑清零(§6.1「一轮的边界」)，
    * 之前因故换下、现在已恢复的电脑又能接手。标记只在本机读，去掉后再交给 Agent 或转给组内电脑。
@@ -1805,9 +1820,13 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           });
           void finishRun(run, reason, 'navigation', false, true);
         };
+        if (run.quotaFailure) {
+          void waitForQuotaFailureDelivery(run).then(() => emit(finish), finish);
+          return;
+        }
         // 一轮进行中那台的任务意外结束(离线、崩溃等)：与终态错误一样可以换一台。
         const unexpected = backend.turnRunning && !NORMAL_RELAY_CLOSE_REASONS.has(reason);
-        if (unexpected && !held && !run.quotaFailure) {
+        if (unexpected && !held) {
           holdForGroupSwitch({ reason: 'remote_agent_closed', ...(error?.message ? { message: error.message } : {}) }, finish);
           return;
         }

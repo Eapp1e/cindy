@@ -47,7 +47,7 @@ interface Started {
   /** 这台上是否正在运行一轮(写进状态)。 */
   running: boolean;
   /** 这台上的 Agent 事件流意外结束(进程退出等)。 */
-  end(): void;
+  end(error?: Error): void;
 }
 
 function fakeAgentHost(name: string, started: Started[], options: {
@@ -79,6 +79,7 @@ function fakeAgentHost(name: string, started: Started[], options: {
       const queue: AgentEvent[] = [];
       let wake: (() => void) | null = null;
       let ended = false;
+      let endError: Error | undefined;
       const record: Started = {
         input,
         sends: [],
@@ -88,8 +89,9 @@ function fakeAgentHost(name: string, started: Started[], options: {
           wake?.();
           wake = null;
         },
-        end() {
+        end(error) {
           ended = true;
+          endError = error;
           wake?.();
           wake = null;
         },
@@ -112,6 +114,7 @@ function fakeAgentHost(name: string, started: Started[], options: {
             next: async () => {
               if (options.endImmediately) return { value: undefined as unknown as AgentEvent, done: true };
               while (queue.length === 0 && !ended) await new Promise<void>((resolve) => { wake = resolve; });
+              if (queue.length === 0 && endError) throw endError;
               if (queue.length === 0) return { value: undefined as unknown as AgentEvent, done: true };
               return { value: queue.shift()!, done: false };
             },
@@ -1024,6 +1027,72 @@ describe('provider group "switch to another computer" for shared users', () => {
       expect(await send).toMatchObject({ message: expect.stringContaining('usage limit') });
       expect(switchTokenIn(first.stream)).toBeDefined();
       expect(first.stream.filter(item => item.t === 'event' && item.event.type === 'error')).toHaveLength(1);
+    } finally {
+      release();
+      await Promise.all([first.client.close('close', 'navigation'), other.client.close('close', 'navigation')]);
+      for (const host of [env.owner, ...Object.values(env.members)]) { await host.abortAll(); host.dispose(); }
+    }
+  });
+
+  // Review r4386499053: an SDK stream/legacy member can end after rejecting send,
+  // before the next-member decision completes. Only passive shutdown must wait;
+  // otherwise closing invalidates the pending offer before it reaches the guest.
+  it.each([
+    ['local', 'end'], ['local', 'error'], ['local', 'explicit'],
+    ['member', 'end'], ['member', 'error'], ['member', 'explicit'],
+  ] as const)('settles pending quota recovery on %s shutdown (%s)', async (placement, endKind) => {
+    let rejectQuota = placement === 'member';
+    const env = setup({
+      plans: [
+        placement === 'local' ? { kind: 'local' } : { kind: 'member', ...MEMBER_MINI },
+        { kind: 'member', ...MEMBER_MINI },
+      ],
+      owner: { onSend: () => { throw new Error('You have hit your usage limit'); } },
+      // Model an older member returning a quota rejection without a native error.
+      intercept: async (_device, request, forward) => {
+        if (rejectQuota && request.op === 'call' && request.method === 'send') {
+          rejectQuota = false;
+          throw new Error('You have hit your usage limit');
+        }
+        return forward();
+      },
+    });
+    const first = await openAsGuest(env, GUEST_A, openPayload(SESSION, { acceptsGroupSwitch: true }));
+    const record = placement === 'local' ? env.ownerStarted[0] : env.memberStarted.mini[0];
+    const other = await openAsGuest(env, GUEST_B, openPayload(SESSION));
+    const memberEnded = placement === 'member'
+      ? vi.spyOn(env.relay.connect(MEMBER_MINI.agentDeviceId).poller, 'unregister')
+      : null;
+    let release!: () => void;
+    const decision = new Promise<void>(resolve => { release = resolve; });
+    env.relay.plan.mockImplementationOnce(async () => {
+      await decision;
+      return { kind: 'member', ...MEMBER_STUDIO };
+    });
+    const send = first.client.call('send', [{ content: 'finish the task' }, {}]).catch(error => error);
+    try {
+      await waitFor(() => env.relay.plan.mock.calls.length === 3);
+      if (endKind === 'explicit') {
+        await first.client.close('close', 'navigation');
+        expect(first.isClosed()).toBe(true);
+        release();
+        await send;
+        expect(switchTokenIn(first.stream)).toBeUndefined();
+        expect(first.stream.some(item => item.t === 'event' && item.event.type === 'error')).toBe(false);
+        return;
+      }
+      record.end(endKind === 'error' ? new Error('agent stream ended unexpectedly') : undefined);
+      if (memberEnded) await waitFor(() => memberEnded.mock.calls.length > 0);
+      // Another full round trip lets the passive end propagate while plan waits.
+      await other.client.call('send', [{ content: 'unrelated task' }, {}]);
+      expect(first.isClosed()).toBe(false);
+      expect(other.isClosed()).toBe(false);
+      release();
+      expect(await send).toMatchObject({ message: expect.stringContaining('usage limit') });
+      await waitFor(() => first.isClosed());
+      expect(switchTokenIn(first.stream)).toBeDefined();
+      expect(first.stream.filter(item => item.t === 'event' && item.event.type === 'error')).toHaveLength(1);
+      expect(env.relay.noteRunFailure).toHaveBeenCalledTimes(1);
     } finally {
       release();
       await Promise.all([first.client.close('close', 'navigation'), other.client.close('close', 'navigation')]);
