@@ -114,6 +114,7 @@ describe('model context limit store', () => {
     expect(readModelContextLimit('codex', providerId, 'gpt')).toBe(272_000);
     expect(stageProviderModelCompactionClear(providerId)()).toBe(true);
     await save([other], 70);
+    expect(readModelCompactionPct(other.providerId, 'gpt')).toBe(70);
     expect(readModelCompactionPct(providerId, 'gpt')).toBeNull();
     expect(restore()).toBe(true);
     expect(readModelCompactionPct(providerId, 'gpt')).toBe(65);
