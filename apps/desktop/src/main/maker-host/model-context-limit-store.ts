@@ -159,13 +159,17 @@ export function stageProviderModelCompactionClear(providerId: string): () => boo
   ownerStore.writePatch({
     compactionPcts: Object.fromEntries(Object.entries(previous).filter(([key]) => !key.startsWith(prefix))),
   });
+  // This write used a separate store; equal file mtimes must not retain deleted policies.
+  store = createStore(() => ownerScopedUserDataPath('model-context-limit-prefs.json'));
   return () => {
     try {
-      ownerStore.invalidateIfChanged();
-      const current = { ...ownerStore.read().compactionPcts };
+      // Reload the pinned owner's file even when intervening writes share its mtime.
+      const rollbackStore = createStore(() => filePath);
+      const current = { ...rollbackStore.read().compactionPcts };
       // Restore only removed entries; do not overwrite a newer external edit.
       for (const [key, value] of Object.entries(removed)) current[key] ??= value;
-      ownerStore.writePatch({ compactionPcts: current });
+      rollbackStore.writePatch({ compactionPcts: current });
+      store = createStore(() => ownerScopedUserDataPath('model-context-limit-prefs.json'));
       return true;
     } catch (error) {
       log.warn('restore provider model compaction failed', {
