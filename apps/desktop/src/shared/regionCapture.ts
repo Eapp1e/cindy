@@ -6,7 +6,20 @@ export interface RegionCaptureBegin {
   selection: RegionRect;
   first: RegionScreenshotBitmap;
   scrollLayout?: ScrollCaptureLayout;
+  recordingLayout?: { viewport: { width: number; height: number }; controls: RegionRect };
 }
+export interface RecordingPreviewDocument {
+  token: string;
+  locale: string;
+  bytes: Uint8Array<ArrayBuffer>;
+  format: 'webm' | 'gif';
+}
+export const RECORDING_PREVIEW_CHANNEL = {
+  READY: 'recording-preview:ready', BEGIN: 'recording-preview:begin', END: 'recording-preview:end',
+  PAINTED: 'recording-preview:painted', FAILED: 'recording-preview:failed',
+  CLOSE: 'recording-preview:close', MINIMIZE: 'recording-preview:minimize',
+  SAVE: 'recording-preview:save', COPY: 'recording-preview:copy', ACTIVITY: 'recording-preview:activity',
+} as const;
 export interface RegionCaptureFrame {
   image: RegionScreenshotBitmap;
   cursor: RegionPoint | null;
@@ -26,9 +39,29 @@ export const REGION_CAPTURE_CHANNEL = {
   EDIT: 'region-screenshot:live-edit',
   HOLD: 'region-screenshot:live-hold',
   AUTO_SCROLL: 'region-screenshot:auto-scroll',
+  CONTROLS: 'region-screenshot:recording-controls',
+  PREVIEW: 'region-screenshot:recording-preview',
 } as const;
 export const MAX_RECORDING_BYTES = 100 * 1024 * 1024;
 export const MAX_RECORDING_MS = 5 * 60_000;
+
+/** Controls stay on the capture display and outside its pixels, even while dragged. */
+export function recordingControlsBounds(selection: RegionRect, viewport: { width: number; height: number }, expanded: boolean, point?: RegionPoint): RegionRect | null {
+  const width = 460, height = expanded ? 336 : 72, gap = 8;
+  const spaces = [
+    { x: gap, y: selection.y + selection.height + gap, width: viewport.width - 2 * gap, height: viewport.height - selection.y - selection.height - 2 * gap },
+    { x: gap, y: gap, width: viewport.width - 2 * gap, height: selection.y - 2 * gap },
+    { x: selection.x + selection.width + gap, y: gap, width: viewport.width - selection.x - selection.width - 2 * gap, height: viewport.height - 2 * gap },
+    { x: gap, y: gap, width: selection.x - 2 * gap, height: viewport.height - 2 * gap },
+  ];
+  const candidates = spaces.filter((r) => r.width >= width && r.height >= height).map((r) => ({
+    x: Math.round(Math.max(r.x, Math.min(r.x + r.width - width, point?.x ?? selection.x + selection.width - width))),
+    y: Math.round(Math.max(r.y, Math.min(r.y + r.height - height, point?.y ?? (r.y > selection.y ? r.y : selection.y - height - gap)))),
+    width, height,
+  }));
+  if (point) candidates.sort((a, b) => Math.hypot(a.x - point.x, a.y - point.y) - Math.hypot(b.x - point.x, b.y - point.y));
+  return candidates[0] ?? null;
+}
 
 /** The preview/actions belong to the selection and never cover source pixels. */
 export function scrollCaptureLayout(selection: RegionRect, viewport: { width: number; height: number }): ScrollCaptureLayout | null {
@@ -64,30 +97,6 @@ export function scrollCaptureLayout(selection: RegionRect, viewport: { width: nu
 export function scrollPreviewBounds(layout: ScrollCaptureLayout, visibleHeight: number): RegionRect {
   const height = Math.max(1, Math.min(layout.preview.height, visibleHeight));
   return { ...layout.preview, y: layout.preview.y + layout.preview.height - height, height };
-}
-
-/** Choose a panel position wholly outside the capture, including on a second monitor. */
-export function capturePanelBounds(selection: RegionRect, displays: readonly RegionRect[], compact = false): RegionRect | null {
-  for (const display of displays) {
-    const right = display.x + display.width;
-    const bottom = display.y + display.height;
-    const intersects = selection.x < right && selection.x + selection.width > display.x && selection.y < bottom && selection.y + selection.height > display.y;
-    const spaces = intersects ? [
-      { x: display.x, y: selection.y + selection.height, width: display.width, height: bottom - selection.y - selection.height },
-      { x: display.x, y: display.y, width: display.width, height: selection.y - display.y },
-      { x: display.x, y: display.y, width: selection.x - display.x, height: display.height },
-      { x: selection.x + selection.width, y: display.y, width: right - selection.x - selection.width, height: display.height },
-    ] : [display];
-    for (const space of spaces) {
-      if (space.width < (compact ? 420 : 336) || space.height < (compact ? 88 : 244)) continue;
-      const width = Math.min(compact ? 600 : 440, space.width - 16);
-      const height = Math.min(compact ? 72 : 320, space.height - 16);
-      const x = Math.max(space.x + 8, Math.min(selection.x + selection.width - width, space.x + space.width - width - 8));
-      const y = space.y >= selection.y + selection.height ? space.y + 8 : Math.max(space.y + 8, space.y + space.height - height - 8);
-      return { x: Math.round(x), y: Math.round(y), width: Math.floor(width), height: Math.floor(height) };
-    }
-  }
-  return null;
 }
 
 /** Only fixed-format clip bytes cross the export bridge; paths never do. */

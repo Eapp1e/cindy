@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type { BrowserWindow, Display, NativeImage } from 'electron';
 import type { SnapshotHelper } from '../snapshotHost';
+import type { RegionRect, RegionScreenshotBitmap } from '../../../shared/regionScreenshot';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -20,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   unregister: vi.fn(),
   liveCapture: vi.fn(),
   saveRecording: vi.fn(async () => true),
+  copyRecording: vi.fn<(bytes: Uint8Array, format: string, isCurrent: () => boolean) => Promise<void>>(async () => {}),
 }));
 vi.mock('electron', () => ({
   app: {
@@ -54,6 +56,7 @@ vi.mock('electron', () => ({
 vi.mock('../pageWindow', () => ({ createScreenshotPageWindow: mocks.create }));
 vi.mock('../compose', () => ({ handOffScreenshotToTask: vi.fn() }));
 vi.mock('../save', () => ({ saveScreenshotImage: vi.fn(), saveRegionRecording: mocks.saveRecording }));
+vi.mock('../recordingClipboard', () => ({ copyRegionRecording: mocks.copyRecording }));
 vi.mock('../liveCapture', () => ({ captureLiveRegion: mocks.liveCapture, RegionVideoCapture: class { frame = mocks.liveCapture; stop() {} } }));
 vi.mock('../../i18n', () => ({ getResolvedMainLocale: () => 'en', t: (key: string) => key }));
 vi.mock('../../logger', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() }) }));
@@ -62,6 +65,8 @@ import { RegionScreenshotSession } from '../session';
 import { acquireOverlayEscape } from '../../overlayEscape';
 import { closeAllPins, openPin, registerPinIpc } from '../pins';
 import { ScreenshotEditor } from '../editor';
+import { RecordingPreview } from '../recordingPreview';
+import { RECORDING_PREVIEW_CHANNEL as R } from '../../../shared/regionCapture';
 import { REGION_SCREENSHOT_EDITOR_CHANNEL as E, REGION_SCREENSHOT_PIN_CHANNEL as P } from '../../../shared/regionScreenshot';
 
 let nextId = 0;
@@ -210,7 +215,7 @@ describe('screenshot window lifecycle', () => {
     const crop = { getSize: () => ({ width: 400, height: 300 }), toBitmap: () => Buffer.alloc(400 * 300 * 4), resize: () => crop };
     const source = { getSize: () => ({ width: 1280, height: 900 }), toBitmap: () => Buffer.alloc(1280 * 900 * 4), crop: () => crop } as unknown as NativeImage;
     const result = vi.fn();
-    const openEditor = vi.fn(() => true);
+    const openEditor = vi.fn<(image: RegionScreenshotBitmap, display: Display, selection: RegionRect) => boolean>(() => true);
     const session = new RegionScreenshotSession({ pool, captures: [{ display: largeDisplay, image: source }], helper: {} as SnapshotHelper, windows: [], lastRegions: new Map(), onClosed: vi.fn(), onResult: result, openEditor });
     await session.open();
     session.painted(owner, owner.mainFrame, session.token);
@@ -227,7 +232,13 @@ describe('screenshot window lifecycle', () => {
     expect(session.restoreEditor(owner, owner.mainFrame, session.token, long)).toBe(false);
     expect(session.isClosed).toBe(false);
     expect(session.restoreEditor(owner, owner.mainFrame, session.token, long)).toBe(true);
-    expect(openEditor).toHaveBeenLastCalledWith(long, largeDisplay, selection);
+    // Assert byte ownership directly; serializing millions of typed-array entries
+    // in a call matcher made this lifecycle test time out on the Linux CI runner.
+    const handedOff = openEditor.mock.calls.at(-1)!;
+    expect({ width: handedOff[0].width, height: handedOff[0].height }).toEqual({ width: long.width, height: long.height });
+    expect(handedOff[0].data).toBe(long.data);
+    expect(handedOff[1]).toBe(largeDisplay);
+    expect(handedOff[2]).toEqual(selection);
     expect(session.isClosed).toBe(true);
     expect(session.hasEditor).toBe(true);
     expect(windows[0].isVisible()).toBe(false);
@@ -279,18 +290,88 @@ describe('screenshot window lifecycle', () => {
     pool.markShellReady(owner, owner.mainFrame);
     const crop = { getSize: () => ({ width: 400, height: 300 }), toBitmap: () => Buffer.alloc(400 * 300 * 4), resize: () => crop };
     const source = { getSize: () => ({ width: 1280, height: 900 }), toBitmap: () => Buffer.alloc(1280 * 900 * 4), crop: () => crop } as unknown as NativeImage;
-    const session = new RegionScreenshotSession({ pool, captures: [{ display: largeDisplay, image: source }], helper: {} as SnapshotHelper, windows: [], lastRegions: new Map(), onClosed: vi.fn(), onResult: vi.fn() });
+    const openRecording = vi.fn(() => false);
+    const session = new RegionScreenshotSession({ pool, captures: [{ display: largeDisplay, image: source }], helper: {} as SnapshotHelper, windows: [], lastRegions: new Map(), onClosed: vi.fn(), onResult: vi.fn(), openRecording });
     await session.open();
     session.painted(owner, owner.mainFrame, session.token);
     session.startLive(owner, owner.mainFrame, session.token, 'video', { x: 0, y: 0, width: 400, height: 300 });
     const clip = new Uint8Array(20); clip.set([0x1a, 0x45, 0xdf, 0xa3]);
+    // User-requested compact controls: dragging cannot cover source pixels;
+    // foreign requests and a failed preview handoff must retain this capture. tier: unit.
+    expect(session.updateRecordingControls(owner, {} as Electron.WebFrameMain, session.token, false, undefined, false)).toBeNull();
+    expect(session.updateRecordingControls(owner, owner.mainFrame, session.token, false, { x: NaN, y: 0 }, false)).toBeNull();
+    const moved = session.updateRecordingControls(owner, owner.mainFrame, session.token, false, { x: 0, y: 0 }, true)!;
+    expect(moved.x >= 400 || moved.y >= 300).toBe(true);
+    expect(windows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(false, { forward: true });
+    session.updateRecordingControls(owner, owner.mainFrame, session.token, false, moved, false);
+    expect(windows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
+    expect(session.previewRecording(owner, owner.mainFrame, 'stale', clip, 'webm')).toBe(false);
+    expect(session.previewRecording(owner, owner.mainFrame, session.token, clip, 'gif')).toBe(false);
+    expect(session.previewRecording(owner, owner.mainFrame, session.token, clip, 'webm')).toBe(false);
+    expect(session.isClosed).toBe(false);
     expect(await session.saveRecording(owner, owner.mainFrame, session.token, clip, 'gif')).toBe(false);
     expect(mocks.saveRecording).not.toHaveBeenCalled();
     mocks.saveRecording.mockResolvedValueOnce(false);
     expect(await session.saveRecording(owner, owner.mainFrame, session.token, clip, 'webm')).toBe(false);
     expect(session.isClosed).toBe(false);
     expect(await session.saveRecording(owner, owner.mainFrame, session.token, clip, 'webm')).toBe(true);
-    session.close();
+    openRecording.mockReturnValue(true);
+    expect(session.previewRecording(owner, owner.mainFrame, session.token, clip, 'webm')).toBe(true);
+    expect(session.isClosed).toBe(true);
+    expect(session.hasEditor).toBe(true);
+  });
+
+  // New preview IPC/lifetime contract (Electron rules §3.1): existing image tests
+  // cannot cover clip save ownership, cancelled dialogs or replay after close.
+  // Minimal input: stale token after reopening; failed native save. tier: unit.
+  it('prewarms clip playback, validates its document owner and retains bytes after cancelling save', async () => {
+    const preview = new RecordingPreview();
+    const clip = new Uint8Array(20); clip.set([0x1a, 0x45, 0xdf, 0xa3]);
+    preview.registerIpc(); preview.prewarm();
+    const win = windows[0], event = { sender: win.webContents, senderFrame: win.webContents.mainFrame };
+    const signal = (channel: string, ...args: unknown[]) => mocks.handlers.get(channel)!(event, ...args);
+    try {
+      expect(win.isVisible()).toBe(false);
+      signal(R.READY);
+      expect(preview.open(clip, 'webm', display)).toBe(true);
+      const first = win.webContents.send.mock.calls.find(([name]) => name === R.BEGIN)![1];
+      expect(win.isVisible()).toBe(false);
+      mocks.handlers.get(R.PAINTED)!({ ...event, senderFrame: {} }, first.token);
+      expect(win.isVisible()).toBe(false);
+      signal(R.PAINTED, first.token);
+      expect(win.isVisible()).toBe(true);
+      expect(await mocks.handlers.get(R.SAVE)!({ ...event, sender: {} }, first.token)).toBe(false);
+      expect(await signal(R.SAVE, 'stale')).toBe(false);
+      expect(mocks.saveRecording).not.toHaveBeenCalled();
+      mocks.saveRecording.mockResolvedValueOnce(false);
+      expect(await signal(R.SAVE, first.token)).toBe(false);
+      expect(win.isVisible()).toBe(true);
+      expect(await signal(R.SAVE, first.token)).toBe(true);
+      expect(mocks.saveRecording).toHaveBeenLastCalledWith(clip, 'webm');
+      // Copy grants no path/payload input: only this preview's current document.
+      expect(await mocks.handlers.get(R.COPY)!({ ...event, sender: {} }, first.token)).toBe(false);
+      expect(await mocks.handlers.get(R.COPY)!({ ...event, senderFrame: {} }, first.token)).toBe(false);
+      expect(await signal(R.COPY, 'stale')).toBe(false);
+      expect(mocks.copyRecording).not.toHaveBeenCalled();
+      mocks.copyRecording.mockRejectedValueOnce(new Error('clipboard busy'));
+      expect(await signal(R.COPY, first.token)).toBe(false);
+      expect(win.isVisible()).toBe(true);
+      expect(await signal(R.COPY, first.token)).toBe(true);
+      expect(mocks.copyRecording).toHaveBeenLastCalledWith(clip, 'webm', expect.any(Function));
+      const stillCurrent = mocks.copyRecording.mock.calls.at(-1)![2] as () => boolean;
+      expect(stillCurrent()).toBe(true);
+      signal(R.CLOSE, first.token);
+      expect(stillCurrent()).toBe(false);
+      expect(win.isVisible()).toBe(false);
+      expect(win.webContents.send).toHaveBeenCalledWith(R.END);
+      expect(preview.open(clip, 'webm', display)).toBe(true);
+      const next = win.webContents.send.mock.calls.filter(([name]) => name === R.BEGIN).at(-1)![1];
+      signal(R.PAINTED, first.token);
+      expect(win.isVisible()).toBe(false);
+      signal(R.PAINTED, next.token);
+      expect(win.isVisible()).toBe(true);
+      expect(windows).toHaveLength(1);
+    } finally { preview.dispose(); }
   });
 
   // 用户反馈再次截图不可见; 现有覆盖没有验证用过的透明浮层与下一次会话隔离。

@@ -13,7 +13,7 @@ import { createLogger } from '../logger';
 import { getResolvedMainLocale } from '../i18n';
 import { acquireOverlayEscape } from '../overlayEscape';
 import { throwIpcError } from '../utils/ipcValidate';
-import { capturePanelBounds, scrollCaptureLayout, scrollPreviewBounds, validRecordingBytes, type ScrollCaptureLayout, type RegionCaptureBegin, type RegionCaptureFrame, type RegionCaptureMode } from '../../shared/regionCapture';
+import { recordingControlsBounds, scrollCaptureLayout, scrollPreviewBounds, validRecordingBytes, type ScrollCaptureLayout, type RegionCaptureBegin, type RegionCaptureFrame, type RegionCaptureMode } from '../../shared/regionCapture';
 import { captureLiveRegion, RegionVideoCapture } from './liveCapture';
 import { saveRegionRecording } from './save';
 import {
@@ -67,6 +67,7 @@ export interface RegionScreenshotSessionDeps {
   lastRegions: ReadonlyMap<number, RegionRect>;
   onResult: (result: RegionScreenshotResult) => void;
   openEditor?: (image: RegionScreenshotBitmap, display: Display, selection: RegionRect) => boolean;
+  openRecording?: (bytes: Uint8Array<ArrayBuffer>, format: 'webm' | 'gif', display: Display) => boolean;
   onClosed: () => void;
 }
 
@@ -91,6 +92,8 @@ export class RegionScreenshotSession {
   private handedToEditor = false;
   private exporting = false;
   private videoCapture: RegionVideoCapture | null = null;
+  private recordingControls: RegionRect | null = null;
+  private draggingControls = false;
   private live: { member: Member; selection: RegionRect; mode: RegionCaptureMode; sampling: boolean; lastSample: number; editing: boolean; layout: ScrollCaptureLayout | null; automatic: boolean; target: SnapshotWindow | null; ignoring: boolean; previewHeight: number } | null = null;
   private scrollPointerTimer: ReturnType<typeof setInterval> | null = null;
   private revealTimer: ReturnType<typeof setTimeout> | null = null;
@@ -306,10 +309,9 @@ export class RegionScreenshotSession {
     const { display, image } = member.capture;
     const selection = normalizeRegionSelection(rawSelection, display.bounds, display.scaleFactor);
     if (!selection || selection.width < 32 || selection.height < 32) return null;
-    const displays = [display, ...screen.getAllDisplays().filter((item) => item.id !== display.id)];
     const layout = mode === 'scroll' ? scrollCaptureLayout(selection, display.bounds) : null;
-    const bounds = mode === 'scroll' ? (layout ? display.bounds : null) : capturePanelBounds({ ...selection, x: selection.x + display.bounds.x, y: selection.y + display.bounds.y }, displays.map((item) => item.bounds));
-    if (!bounds) return null;
+    const controls = mode === 'scroll' ? null : recordingControlsBounds(selection, display.bounds, false);
+    if (!layout && !controls) return null;
     const size = image.getSize();
     const mapping = regionSelectionToImageCrop(selection, display.bounds, size, display.scaleFactor);
     if (!mapping) return null;
@@ -324,23 +326,52 @@ export class RegionScreenshotSession {
       if (other === member) continue;
       hideScreenshotOverlay(other.overlay.window);
     }
-    member.overlay.window.setBounds(bounds, false);
+    this.recordingControls = controls;
+    member.overlay.window.setBounds(display.bounds, false);
     // Return input focus to the underlying app without closing the capture panel.
     member.overlay.window.blur();
-    if (layout) {
-      this.updateScrollHitTest();
-      this.scrollPointerTimer = setInterval(() => this.updateScrollHitTest(), 30);
+    this.updateScrollHitTest();
+    this.scrollPointerTimer = setInterval(() => this.updateScrollHitTest(), 30);
+    return { mode: mode as RegionCaptureMode, selection, first: { ...croppedSize, data: new Uint8Array(crop.toBitmap()) }, ...(layout ? { scrollLayout: layout } : {}), ...(controls ? { recordingLayout: { viewport: display.bounds, controls } } : {}) };
+  }
+
+  updateRecordingControls(sender: WebContents, frame: Electron.WebFrameMain | null, token: unknown, expanded: unknown, point: unknown, dragging: unknown): RegionRect | null {
+    const member = this.member(sender, frame, token), live = this.live;
+    if (!member || !live || live.member !== member || live.mode === 'scroll' || typeof expanded !== 'boolean' || typeof dragging !== 'boolean') return null;
+    let position: { x: number; y: number } | undefined;
+    if (point !== undefined) {
+      if (!point || typeof point !== 'object') return null;
+      const { x, y } = point as Record<string, unknown>;
+      if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+      position = { x, y };
     }
-    return { mode: mode as RegionCaptureMode, selection, first: { ...croppedSize, data: new Uint8Array(crop.toBitmap()) }, ...(layout ? { scrollLayout: layout } : {}) };
+    const controls = recordingControlsBounds(live.selection, member.capture.display.bounds, expanded, position);
+    if (!controls) return null;
+    this.recordingControls = controls;
+    this.draggingControls = dragging;
+    this.updateScrollHitTest();
+    return controls;
+  }
+
+  previewRecording(sender: WebContents, frame: Electron.WebFrameMain | null, token: unknown, bytes: unknown, format: unknown): boolean {
+    const member = this.member(sender, frame, token), live = this.live;
+    if (!member || !live || live.member !== member || this.exporting || live.mode === 'scroll') return false;
+    const expected = live.mode === 'gif' ? 'gif' : 'webm';
+    if (format !== expected || !validRecordingBytes(bytes, format)) return false;
+    if (!this.deps.openRecording?.(new Uint8Array(bytes), expected, member.capture.display)) return false;
+    this.handedToEditor = true;
+    this.close();
+    return true;
   }
 
   private updateScrollHitTest(): void {
     const live = this.live;
-    if (!live?.layout || live.editing || live.sampling || this.closed) return;
+    if (!live || (!live.layout && !this.recordingControls) || live.editing || live.sampling || this.closed) return;
     const point = screen.getCursorScreenPoint();
     const { bounds } = live.member.capture.display;
     const x = point.x - bounds.x, y = point.y - bounds.y;
-    const interactive = [scrollPreviewBounds(live.layout, live.previewHeight), live.layout.auto, live.layout.actions].some((r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
+    const areas = live.layout ? [scrollPreviewBounds(live.layout, live.previewHeight), live.layout.auto, live.layout.actions] : [this.recordingControls!];
+    const interactive = this.draggingControls || areas.some((r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
     if (live.ignoring === !interactive) return;
     live.ignoring = !interactive;
     live.member.overlay.window.setIgnoreMouseEvents(!interactive, { forward: true });

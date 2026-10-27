@@ -187,7 +187,7 @@ export const ScreenshotToolbar = forwardRef<HTMLDivElement, ScreenshotToolbarPro
   },
 );
 
-export type ScreenshotMode = 'image' | RegionCaptureMode;
+export type ScreenshotMode = 'image' | Exclude<RegionCaptureMode, 'gif'>;
 
 /** Screen-top mode switcher stays available before and after selecting a region. */
 export function ScreenshotModeBar(props: {
@@ -236,7 +236,7 @@ export function ScreenshotModeBar(props: {
         const bounds = event.currentTarget.parentElement!.getBoundingClientRect();
         moveTo(bounds.left + (event.key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? 40 : 10), bounds.width);
       }}><GripVertical size={14} /></button>
-    {(['image', 'scroll', 'video', 'gif'] as const).filter((mode) => !props.finished || mode === 'image').map((mode) => <Button key={mode} size="xs" variant="secondary" tone={props.mode === mode ? 'default' : 'quiet'} aria-pressed={props.mode === mode}
+    {(['image', 'scroll', 'video'] as const).filter((mode) => !props.finished || mode === 'image').map((mode) => <Button key={mode} size="xs" variant="secondary" tone={props.mode === mode ? 'default' : 'quiet'} aria-pressed={props.mode === mode}
       onMouseDown={(event) => event.preventDefault()} onClick={() => props.onMode(mode)}>{t(mode === 'image' ? 'regionScreenshot.live.image' : 'regionScreenshot.live.' + mode)}</Button>)}
     <Divider />
     <div className="relative">

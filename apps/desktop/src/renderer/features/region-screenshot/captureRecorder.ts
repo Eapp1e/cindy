@@ -1,5 +1,6 @@
 import { GIFEncoder, applyPalette, quantize } from 'gifenc';
 import { MAX_RECORDING_BYTES } from '../../../shared/regionCapture';
+import { finalizeWebmDuration } from './webmDuration';
 
 /** Bounded, local-only encoding. Source pixels are supplied by the host's selected region. */
 export class CaptureRecorder {
@@ -77,7 +78,9 @@ export class CaptureRecorder {
       this.stream?.getTracks().forEach((track) => track.stop());
       if (this.failure) throw this.failure;
       if (!this.bytes) throw new Error('No video frames were encoded');
-      return new Uint8Array(await new Blob(this.chunks, { type: 'video/webm' }).arrayBuffer());
+      const bytes = finalizeWebmDuration(new Uint8Array(await new Blob(this.chunks, { type: 'video/webm' }).arrayBuffer()), at);
+      if (bytes.length > MAX_RECORDING_BYTES) throw new Error('Recording size limit');
+      return bytes;
     }
     this.flushGif(at);
     this.gif!.finish();

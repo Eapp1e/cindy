@@ -170,6 +170,7 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
   const [live, setLive] = useState<RegionCaptureBegin | null>(null);
   const [liveError, setLiveError] = useState(false);
   const [captureMode, setCaptureMode] = useState<ScreenshotMode>('image');
+  const [recordingFormat, setRecordingFormat] = useState<'video' | 'gif'>('video');
   const liveRef = useRef(false);
   const [longResult, setLongResult] = useState<{ image: RegionScreenshotBitmap; selection: RegionRect } | null>(null);
   const longResultRef = useRef(longResult);
@@ -243,6 +244,7 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
   const resetInteraction = useCallback(() => {
     setLive(null);
     setCaptureMode('image');
+    setRecordingFormat('video');
     setModeBarCenter(null);
     setLongResult(null);
     longResultRef.current = null;
@@ -1068,7 +1070,7 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
 
   if (live && session) return live.mode === 'scroll'
     ? <ScrollCaptureOverlay begin={live} token={session.token} bridge={bridge} onEdit={finishScroll} />
-    : <LiveCapturePanel autoStart begin={live} token={session.token} bridge={bridge} />;
+    : <LiveCapturePanel begin={live} token={session.token} bridge={bridge} />;
 
   const toolbar = (imageEditor || toolbarStyle) && (imageEditor || activeDisplay) && (
         <div
@@ -1092,7 +1094,17 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
             onRedo={redo}
             onAction={(action) => void runAction(action)}
             onCancel={cancel}
-          /> : <div ref={toolbarRef} className="pointer-events-auto flex items-center gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-1" onPointerDown={(event) => event.stopPropagation()}>
+          /> : captureMode === 'video' ? <div ref={toolbarRef} className="pointer-events-auto flex w-[360px] max-w-screen flex-col gap-3 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-3 text-12 text-[var(--text-primary)]" onPointerDown={(event) => event.stopPropagation()}>
+            <div role="group" aria-label={t('regionScreenshot.live.format')} className="flex items-center gap-1">
+              <span className="mr-auto text-[var(--text-secondary)]">{t('regionScreenshot.live.format')}</span>
+              {(['video', 'gif'] as const).map((format) => <Button key={format} size="xs" variant="secondary" tone={recordingFormat === format ? 'default' : 'quiet'} aria-pressed={recordingFormat === format} onClick={() => setRecordingFormat(format)}>{format === 'gif' ? 'GIF' : t('regionScreenshot.live.videoFormat')}</Button>)}
+            </div>
+            <p className="text-[var(--text-secondary)]">{t('regionScreenshot.live.prepareHint')}</p>
+            <div className="flex justify-end gap-2">
+              <Button size="xs" variant="secondary" tone="quiet" onClick={cancel}>{t('regionScreenshot.cancel')}</Button>
+              <Button size="xs" variant="cta" onClick={() => void startLive(recordingFormat)}>{t('regionScreenshot.live.start')}</Button>
+            </div>
+          </div> : <div ref={toolbarRef} className="pointer-events-auto flex items-center gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-1" onPointerDown={(event) => event.stopPropagation()}>
             <Button size="xs" variant="cta" onClick={() => void startLive(captureMode)}>{t(captureMode === 'scroll' ? 'regionScreenshot.live.startScroll' : 'regionScreenshot.live.start')}</Button>
             <Button size="xs" variant="secondary" tone="quiet" onClick={cancel}>{t('regionScreenshot.cancel')}</Button>
           </div>}

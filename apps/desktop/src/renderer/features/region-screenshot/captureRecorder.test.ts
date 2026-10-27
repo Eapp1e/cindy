@@ -1,5 +1,18 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { CaptureRecorder } from './captureRecorder';
+import { finalizeWebmDuration } from './webmDuration';
+
+// Real playback reported Infinity and could not show a timeline. Existing tests
+// only decoded pixels. Minimal streaming WebM Info without Duration; tier: unit.
+it('finalizes streaming WebM duration without changing its encoded frames', () => {
+  const stream = new Uint8Array([0x18, 0x53, 0x80, 0x67, 0xff, 0x15, 0x49, 0xa9, 0x66, 0x87, 0x2a, 0xd7, 0xb1, 0x83, 0x0f, 0x42, 0x40, 0x1f, 0x43, 0xb6, 0x75, 0x83, 1, 2, 3]);
+  const result = finalizeWebmDuration(stream, 1234);
+  expect(result[9]).toBe(0x92); // Info grows by the eleven-byte Duration element.
+  expect(new DataView(result.buffer).getFloat64(20)).toBe(1234);
+  expect(result.subarray(28)).toEqual(stream.subarray(17));
+  expect(finalizeWebmDuration(result, 999)).toBe(result);
+  expect(() => finalizeWebmDuration(stream.subarray(0, 12), 100)).toThrow('Invalid WebM metadata');
+});
 
 // Unit regression: the UI matrix produced an empty short WebM that was reported
 // as saved. Exercise the encoder's real finish boundary with an empty browser

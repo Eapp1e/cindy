@@ -17,6 +17,7 @@ export default {
     if (ui.case === 'preview-motion') await page.emulateMedia({ reducedMotion: 'no-preference' });
     const isScroll = ['default', 'idle', 'preview-motion'].includes(ui.case);
     const button = async (key) => page.getByRole('button', { name: await ui.t(key), exact: true });
+    let pausedAt = 0, resumedAt = 0;
     // e2e: exercise the real pointer capture path. Dragging the handle must move
     // only the toolbar, retain its top position, and keep both ends reachable.
     if (ui.case === 'drag') {
@@ -63,7 +64,23 @@ export default {
       await mode.waitFor({ state: 'hidden' });
       return;
     }
-    if (!isScroll) await (await button('regionScreenshot.live.start')).click();
+    if (!isScroll) {
+      await (await button('regionScreenshot.live.video')).click();
+      assert.equal(await page.getByRole('button', { name: 'GIF', exact: true }).count(), 0, 'GIF is a format after selection, not a top-level mode');
+      await page.mouse.move(100, 80); await page.mouse.down();
+      await page.mouse.move(580, 320, { steps: 8 }); await page.mouse.up();
+      if (ui.case === 'gif') await page.getByRole('button', { name: 'GIF', exact: true }).click();
+      assert.equal(await page.getByRole('checkbox').count(), 0, 'recording needs no pointer or keystroke settings');
+      assert.equal(await page.evaluate(() => window.captureQa.frames), 0);
+      await ui.capture('prepare');
+      await (await button('regionScreenshot.live.start')).click();
+      await ui.capture('countdown');
+      assert.equal(await page.evaluate(() => window.captureQa.frames), 0, 'countdown is not recorded');
+      await page.waitForFunction(() => window.captureQa.frames >= 3);
+      assert.equal(await page.evaluate(() => window.captureQa.keysRequested), false, 'recording does not request keyboard input');
+      assert.equal(await page.locator('canvas').count(), 0, 'recording has no permanent thumbnail');
+      await ui.capture('compact-controls');
+    }
     else {
       const modeButton = await button('regionScreenshot.live.scroll');
       assert.ok((await modeButton.boundingBox()).y < 60, 'capture modes are at the screen top before selection');
@@ -181,13 +198,15 @@ export default {
       }
     }
     if (!isScroll) {
+    pausedAt = await page.evaluate(() => performance.now());
     await (await button('regionScreenshot.live.pause')).click();
     const frames = await page.evaluate(() => window.captureQa.frames);
     // e2e: cross a real capture tick to prove that the user-visible pause stops sampling.
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(ui.case === 'video' ? 1600 : 400);
     assert.equal(await page.evaluate(() => window.captureQa.frames), frames);
     await ui.capture('paused');
     if (!isScroll) {
+      await (await button('regionScreenshot.live.annotate')).click();
       await (await button('regionScreenshot.tools.arrow')).click();
       const box = await page.locator('canvas').boundingBox();
       await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.4);
@@ -196,9 +215,11 @@ export default {
       await page.mouse.up();
     }
     await (await button('regionScreenshot.live.resume')).click();
+    resumedAt = await page.evaluate(() => performance.now());
     await page.waitForFunction((previous) => window.captureQa.frames >= previous + 3, frames);
     await ui.capture('capturing');
     }
+    const sampledDuration = await page.evaluate(() => performance.now() - window.captureQa.firstFrameAt) - (resumedAt - pausedAt);
     await (await button(isScroll ? 'regionScreenshot.live.edit' : 'regionScreenshot.live.finish')).click();
     if (isScroll) {
       await page.setViewportSize({ width: 900, height: 700 });
@@ -222,9 +243,43 @@ export default {
     } else {
       await (await button('regionScreenshot.save')).waitFor();
       await (await button('regionScreenshot.save')).click();
+      assert.equal(await page.evaluate(() => window.captureQa.saved), null, 'cancelling the save dialog retains playback');
+      await (await button('regionScreenshot.copy')).click();
+      await page.getByRole('alert').filter({ hasText: await ui.t('regionScreenshot.live.copyFailed') }).waitFor();
+      assert.equal(await page.evaluate(() => window.captureQa.closed), false, 'failed copy keeps playback available');
+      await (await button('regionScreenshot.copy')).click();
+      await page.waitForFunction(() => window.captureQa.copied);
+      await page.getByRole('status').filter({ hasText: await ui.t('regionScreenshot.live.copied') }).waitFor();
+      if (ui.case === 'video') {
+        await page.waitForFunction(() => document.querySelector('video')?.readyState >= 2);
+        assert.ok(await page.locator('video').evaluate(video => Number.isFinite(video.duration) && video.duration > 0), 'finished WebM has a usable timeline');
+        const initial = await page.locator('video').evaluate(video => ({ time: video.currentTime, duration: video.duration, paused: video.paused }));
+        assert.equal(initial.time, 0, 'new playback starts at zero');
+        assert.equal(initial.paused, true, 'preview does not advance before Play');
+        assert.ok(Math.abs(initial.duration * 1000 - sampledDuration) < 750, 'duration excludes countdown and paused time');
+        await page.locator('video').evaluate(video => video.play());
+        await page.waitForFunction(() => document.querySelector('video').currentTime > 0);
+        await page.locator('video').evaluate(video => { video.pause(); video.currentTime = video.duration / 2; });
+        await page.waitForFunction(() => { const video = document.querySelector('video'); return !video.seeking && Math.abs(video.currentTime - video.duration / 2) < 0.05; });
+        await page.locator('video').evaluate(video => { video.currentTime = 0; });
+        await page.waitForFunction(() => { const video = document.querySelector('video'); return !video.seeking && video.currentTime === 0; });
+        // User feedback: fullscreen did nothing, and Esc must not discard the clip.
+        // Browser coverage checks exit behavior; native window entry is verified in Electron.
+        await page.locator('video').evaluate(video => video.requestFullscreen());
+        await page.waitForFunction(() => document.fullscreenElement === document.querySelector('video'));
+        await ui.capture('fullscreen-playback');
+        await page.keyboard.press('Escape');
+        await page.waitForFunction(() => !document.fullscreenElement);
+        assert.equal(await page.evaluate(() => window.captureQa.closed), false, 'Esc exits fullscreen without closing playback');
+      } else {
+        await page.waitForFunction(() => document.querySelector('img')?.naturalWidth > 0);
+        await (await button('regionScreenshot.live.replay')).click();
+      }
+      await ui.capture('independent-playback');
+      await (await button('regionScreenshot.save')).click();
       await page.waitForFunction(() => window.captureQa.saved?.length > 0);
       const clip = await page.evaluate(() => ({ saved: Array.from(window.captureQa.saved), format: window.captureQa.format }));
-      // Playback is an independent decoder check. The fixture document deliberately disallows media.
+      // Decode the exported bytes independently from the preview window.
       const playback = await page.context().newPage();
       let decoded;
       try { decoded = await playback.evaluate(async ({ saved, format }) => {
@@ -237,6 +292,7 @@ export default {
           }
           const video = document.createElement('video'); video.muted = true; video.src = url;
           await new Promise((resolve, reject) => { video.onloadeddata = resolve; video.onerror = reject; });
+          if (!Number.isFinite(video.duration) || video.duration <= 0 || video.currentTime !== 0) throw new Error('Saved video has an invalid timeline');
           const size = { width: video.videoWidth, height: video.videoHeight };
           video.removeAttribute('src'); video.load();
           return size;

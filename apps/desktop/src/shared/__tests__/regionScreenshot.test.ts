@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ScrollCapture, matchScrollFrames } from '../scrollCapture';
-import { capturePanelBounds, scrollCaptureLayout, scrollPreviewBounds, validRecordingBytes } from '../regionCapture';
+import { recordingControlsBounds, scrollCaptureLayout, scrollPreviewBounds, validRecordingBytes } from '../regionCapture';
 import type { RegionScreenshotBitmap } from '../regionScreenshot';
 
 import {
@@ -204,12 +204,16 @@ describe('continuous region capture', () => {
 
   it('keeps the control panel outside the capture, or refuses an impossible placement', () => {
     const display = { x: -1920, y: 0, width: 1920, height: 1080 };
-    const selection = { x: -1900, y: 20, width: 1200, height: 700 };
-    const panel = capturePanelBounds(selection, [display])!;
+    // Layout uses display-local coordinates on negative-origin monitors too.
+    const selection = { x: 20, y: 20, width: 1200, height: 700 };
+    const panel = recordingControlsBounds(selection, display, false)!;
     expect(panel).not.toBeNull();
     expect(panel.y >= selection.y + selection.height || panel.x >= selection.x + selection.width).toBe(true);
-    expect(capturePanelBounds(display, [display])).toBeNull();
-    expect(capturePanelBounds(display, [display, { x: 0, y: 0, width: 800, height: 600 }])?.x).toBeGreaterThanOrEqual(0);
+    expect(recordingControlsBounds({ ...display, x: 0, y: 0 }, display, false)).toBeNull();
+    // The former tall panel rejected this region; compact controls fit while annotations do not.
+    const wide = { x: 0, y: 0, width: 1920, height: 980 };
+    expect(recordingControlsBounds(wide, display, false)?.y).toBeGreaterThanOrEqual(980);
+    expect(recordingControlsBounds(wide, display, true)).toBeNull();
     // The scrolling preview must remain reachable even beside a low selection.
     const viewport = { width: 1920, height: 1080 };
     for (const region of [{ x: 300, y: 800, width: 600, height: 200 }, { x: 10, y: 20, width: 1900, height: 700 }]) {

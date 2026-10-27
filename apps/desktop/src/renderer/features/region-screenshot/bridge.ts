@@ -11,6 +11,8 @@ import type { RegionCaptureBegin, RegionCaptureFrame, RegionCaptureMode } from '
 
 /** 框选浮层 preload (regionScreenshotPreload) 暴露的能力。 */
 export interface RegionScreenshotOverlayBridge {
+  recordingControls(token: string, expanded: boolean, point?: { x: number; y: number }, dragging?: boolean): Promise<RegionRect | null>;
+  previewRecording(token: string, bytes: Uint8Array, format: 'webm' | 'gif'): Promise<boolean>;
   autoScroll(token: string, enabled: boolean): Promise<boolean>;
   restoreEditor(token: string, image: RegionScreenshotBitmap): Promise<boolean>;
   holdCapture(token: string): Promise<void>;

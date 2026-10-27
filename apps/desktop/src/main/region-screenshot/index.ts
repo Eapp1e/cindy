@@ -30,6 +30,7 @@ import {
 import { handOffScreenshotToTask, registerScreenshotComposeIpc } from './compose';
 import { OverlayPool } from './overlays';
 import { ScreenshotEditor } from './editor';
+import { RecordingPreview } from './recordingPreview';
 import { closeAllPins, openPin, registerPinIpc } from './pins';
 import { saveScreenshotImage } from './save';
 import {
@@ -66,6 +67,7 @@ let starting = false;
 let active: RegionScreenshotSession | null = null;
 let prewarmTimer: ReturnType<typeof setTimeout> | null = null;
 const pool = new OverlayPool();
+const recordingPreview = new RecordingPreview();
 const editor = new ScreenshotEditor((result) => {
   lastRegions.set(result.display.id, result.selection);
   void runAction(result);
@@ -79,6 +81,7 @@ export function initRegionScreenshot(): void {
   initialized = true;
   registerIpc();
   editor.registerIpc();
+  recordingPreview.registerIpc();
   registerPinIpc();
   registerScreenshotComposeIpc();
   pool.setGoneHandler((overlay) => {
@@ -119,6 +122,7 @@ export function stopRegionScreenshot(): void {
   if (prewarmTimer) clearTimeout(prewarmTimer);
   pool.destroyAll();
   editor.dispose();
+  recordingPreview.dispose();
   closeAllPins();
 }
 
@@ -129,6 +133,7 @@ function schedulePrewarm(delay: number): void {
     if (!registeredAccelerator || active) return;
     pool.prewarm();
     editor.prewarm();
+    recordingPreview.prewarm();
     // 源码模式顺带把识别程序编译好, 第一次截图不用等编译。
     void resolveSnapshotBinary();
   }, delay);
@@ -170,6 +175,8 @@ function syncShortcut(): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle(LIVE.CONTROLS, (event, token: unknown, expanded: unknown, point: unknown, dragging: unknown) => active?.updateRecordingControls(event.sender, event.senderFrame, token, expanded, point, dragging) ?? null);
+  ipcMain.handle(LIVE.PREVIEW, (event, token: unknown, bytes: unknown, format: unknown) => active?.previewRecording(event.sender, event.senderFrame, token, bytes, format) ?? false);
   ipcMain.handle(LIVE.AUTO_SCROLL, (event, token: unknown, enabled: unknown) => active?.autoScroll(event.sender, event.senderFrame, token, enabled) ?? false);
   ipcMain.handle(LIVE.START, (event, token: unknown, mode: unknown, selection: unknown) => active?.startLive(event.sender, event.senderFrame, token, mode, selection) ?? null);
   ipcMain.handle(LIVE.FRAME, (event, token: unknown, keys: unknown, previewHeight: unknown) => active?.liveFrame(event.sender, event.senderFrame, token, keys, previewHeight) ?? null);
@@ -253,6 +260,7 @@ async function startRegionScreenshot(): Promise<void> {
       windows: snap.windows,
       lastRegions,
       openEditor: (image, display, selection) => editor.open(image, display, selection),
+      openRecording: (bytes, format, display) => recordingPreview.open(bytes, format, display),
       onResult: (value) => {
         result = value;
         lastRegions.set(value.display.id, value.selection);

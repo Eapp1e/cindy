@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react';
 import type { RegionScreenshotBitmap } from '../../../src/shared/regionScreenshot';
 import { mountPage } from '../../ui-page/harness';
-import { LiveCapturePanel } from '../../../src/renderer/features/region-screenshot/LiveCapturePanel';
+import { RecordingPreview } from '../../../src/renderer/features/region-screenshot/RecordingPreview';
 import { RegionScreenshotOverlay } from '../../../src/renderer/features/region-screenshot/RegionScreenshotOverlay';
 import { imageDataToBitmap, type RegionScreenshotOverlayBridge } from '../../../src/renderer/features/region-screenshot/bridge';
-import { scrollCaptureLayout, type RegionCaptureMode } from '../../../src/shared/regionCapture';
+import { recordingControlsBounds, scrollCaptureLayout, type RecordingPreviewDocument, type RegionCaptureMode } from '../../../src/shared/regionCapture';
 
-const qa = { frames: 0, scrollFrames: 0, scrollLimit: 180, manualScroll: null as number | null, idle: false, automatic: false, saved: null as Uint8Array | null, format: '', exportedHeight: 0, annotationPixels: 0, restored: false };
+const qa = { frames: 0, firstFrameAt: 0, keysRequested: false, closed: false, copyAttempts: 0, copied: false, scrollFrames: 0, scrollLimit: 180, manualScroll: null as number | null, idle: false, automatic: false, saved: null as Uint8Array | null, saveAttempts: 0, format: '', exportedHeight: 0, annotationPixels: 0, restored: false };
 Object.assign(window, { captureQa: qa });
 
 function frame(scroll = 0) {
@@ -27,7 +27,11 @@ function frame(scroll = 0) {
 // This adapter mounts the actual independent editor after the capture exports its image.
 function ScrollFixture({ bridge, locale }: { bridge: RegionScreenshotOverlayBridge; locale: string }) {
   const [image, setImage] = useState<RegionScreenshotBitmap | null>(null);
-  const captureBridge = useMemo(() => ({ ...bridge, restoreEditor: async (_token: string, next: RegionScreenshotBitmap) => { qa.restored = true; setImage(next); return true; } }), [bridge]);
+  const [clip, setClip] = useState<RecordingPreviewDocument | null>(null);
+  const captureBridge = useMemo(() => ({ ...bridge,
+    previewRecording: async (_token: string, bytes: Uint8Array, format: 'webm' | 'gif') => { setClip({ token: 'clip', locale, bytes: new Uint8Array(bytes), format }); return true; },
+    restoreEditor: async (_token: string, next: RegionScreenshotBitmap) => { qa.restored = true; setImage(next); return true; },
+  }), [bridge, locale]);
   const editorBridge = useMemo(() => {
     let begin: Parameters<RegionScreenshotOverlayBridge['onBegin']>[0] | undefined;
     return { ...bridge,
@@ -35,6 +39,11 @@ function ScrollFixture({ bridge, locale }: { bridge: RegionScreenshotOverlayBrid
       shellReady: () => { if (image) queueMicrotask(() => begin?.({ token: 'editor', locale, viewport: image, frame: image, scaleFactor: 1, windows: [], cursor: null, lastRegion: { x: 100, y: 100, width: 480, height: 240 } })); },
     };
   }, [bridge, image, locale]);
+  if (clip) return <RecordingPreview document={clip} bridge={{
+    ready() {}, failed() {}, onBegin: () => () => {}, onEnd: () => () => {}, painted() {}, close() { qa.closed = true; }, minimize() {},
+    copy: async () => { if (++qa.copyAttempts === 1) return false; qa.copied = true; return true; },
+    save: async () => { if (++qa.saveAttempts === 1) return false; qa.saved = clip.bytes; qa.format = clip.format; return true; },
+  }} />;
   return image ? <RegionScreenshotOverlay key="editor" imageEditor bridge={editorBridge} /> : <RegionScreenshotOverlay key="capture" bridge={captureBridge} />;
 }
 
@@ -44,15 +53,20 @@ mountPage({
     qa.idle = ctx.case === 'idle';
     qa.manualScroll = ctx.case === 'preview-motion' ? 300 : null;
     let begin: Parameters<RegionScreenshotOverlayBridge['onBegin']>[0] | undefined;
+    let selected = { x: 100, y: 100, width: 480, height: 240 };
     const bridge: RegionScreenshotOverlayBridge = {
       autoScroll: async (_token, enabled) => { qa.automatic = enabled; return true; },
       shellReady() { queueMicrotask(() => begin?.({ token: 'fixture', locale: ctx.locale, viewport: { width: innerWidth, height: innerHeight }, scaleFactor: 1, frame: frame(), windows: [], lastRegion: null, cursor: ctx.case === 'inactive' ? null : { x: 0, y: 0 } })); },
       onBegin: (callback) => { begin = callback; return () => { begin = undefined; }; }, onEnd: () => () => {}, onClear: () => () => {},
       painted() {}, focused() {}, selectionStarted() {}, copyText() {}, cancel() {}, abandon() {},
-      elementsAt: async () => [], startLive: async (_token, captureMode, selection) => ({ mode: captureMode, selection, first: frame(qa.manualScroll ?? 0), scrollLayout: scrollCaptureLayout(selection, { width: innerWidth, height: innerHeight })! }),
+      elementsAt: async () => [], startLive: async (_token, captureMode, selection) => { selected = selection; return { mode: captureMode, selection, first: frame(qa.manualScroll ?? 0), scrollLayout: scrollCaptureLayout(selection, { width: innerWidth, height: innerHeight })!, recordingLayout: { viewport: { width: innerWidth, height: innerHeight }, controls: recordingControlsBounds(selection, { width: innerWidth, height: innerHeight }, false)! } }; },
+      recordingControls: async (_token, expanded, point) => recordingControlsBounds(selected, { width: innerWidth, height: innerHeight }, expanded, point),
+      previewRecording: async () => false,
       restoreEditor: async () => { qa.restored = true; return true; },
       holdCapture: async () => {},
-      liveFrame: async () => {
+      liveFrame: async (_token, keys) => {
+        qa.keysRequested ||= keys;
+        if (!qa.frames) qa.firstFrameAt = performance.now();
         qa.frames++;
         if (!qa.idle) qa.scrollFrames++;
         const image = frame(qa.manualScroll ?? (mode === 'scroll' ? Math.min(qa.scrollLimit, qa.scrollFrames * 30) : qa.frames % 10));
@@ -68,7 +82,6 @@ mountPage({
         return true;
       },
     };
-    if (mode === 'scroll') return <ScrollFixture bridge={bridge} locale={ctx.locale} />;
-    return <LiveCapturePanel token="fixture" bridge={bridge} begin={{ mode, selection: { x: 0, y: 0, width: 480, height: 240 }, first: frame() }} />;
+    return <ScrollFixture bridge={bridge} locale={ctx.locale} />;
   },
 });

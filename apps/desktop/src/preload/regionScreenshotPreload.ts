@@ -17,6 +17,8 @@ import { REGION_CAPTURE_CHANNEL as LIVE, type RegionCaptureMode } from '../share
 exposeScreenshotPageElectronApi();
 
 contextBridge.exposeInMainWorld('regionScreenshot', {
+  recordingControls: (token: string, expanded: boolean, point?: { x: number; y: number }, dragging = false) => ipcRenderer.invoke(LIVE.CONTROLS, token, expanded, point, dragging),
+  previewRecording: (token: string, bytes: Uint8Array, format: 'webm' | 'gif') => ipcRenderer.invoke(LIVE.PREVIEW, token, bytes, format),
   autoScroll: (token: string, enabled: boolean) => ipcRenderer.invoke(LIVE.AUTO_SCROLL, token, enabled),
   startLive: (token: string, mode: RegionCaptureMode, selection: RegionRect) => ipcRenderer.invoke(LIVE.START, token, mode, selection),
   restoreEditor: (token: string, image: RegionScreenshotBitmap) => ipcRenderer.invoke(LIVE.EDIT, token, image),
