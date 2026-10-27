@@ -29,6 +29,7 @@ import {
 } from '../../shared/regionScreenshot';
 import { handOffScreenshotToTask, registerScreenshotComposeIpc } from './compose';
 import { OverlayPool } from './overlays';
+import { ScreenshotEditor } from './editor';
 import { closeAllPins, openPin, registerPinIpc } from './pins';
 import { saveScreenshotImage } from './save';
 import {
@@ -65,6 +66,10 @@ let starting = false;
 let active: RegionScreenshotSession | null = null;
 let prewarmTimer: ReturnType<typeof setTimeout> | null = null;
 const pool = new OverlayPool();
+const editor = new ScreenshotEditor((result) => {
+  lastRegions.set(result.display.id, result.selection);
+  void runAction(result);
+});
 /** 每块显示器上一次截图的选区 (DIP), 供「重复上次区域」; 只在本次运行内记住。 */
 const lastRegions = new Map<number, RegionRect>();
 const disposers: Array<() => void> = [];
@@ -73,6 +78,7 @@ export function initRegionScreenshot(): void {
   if (initialized) return;
   initialized = true;
   registerIpc();
+  editor.registerIpc();
   registerPinIpc();
   registerScreenshotComposeIpc();
   pool.setGoneHandler((overlay) => {
@@ -112,6 +118,7 @@ export function stopRegionScreenshot(): void {
   // 会话结束会排一次预热，必须在它之后清掉。
   if (prewarmTimer) clearTimeout(prewarmTimer);
   pool.destroyAll();
+  editor.dispose();
   closeAllPins();
 }
 
@@ -121,6 +128,7 @@ function schedulePrewarm(delay: number): void {
     prewarmTimer = null;
     if (!registeredAccelerator || active) return;
     pool.prewarm();
+    editor.prewarm();
     // 源码模式顺带把识别程序编译好, 第一次截图不用等编译。
     void resolveSnapshotBinary();
   }, delay);
@@ -166,7 +174,7 @@ function registerIpc(): void {
   ipcMain.handle(LIVE.START, (event, token: unknown, mode: unknown, selection: unknown) => active?.startLive(event.sender, event.senderFrame, token, mode, selection) ?? null);
   ipcMain.handle(LIVE.FRAME, (event, token: unknown, keys: unknown, previewHeight: unknown) => active?.liveFrame(event.sender, event.senderFrame, token, keys, previewHeight) ?? null);
   ipcMain.handle(LIVE.SAVE, (event, token: unknown, bytes: unknown, format: unknown) => active?.saveRecording(event.sender, event.senderFrame, token, bytes, format) ?? false);
-  ipcMain.handle(LIVE.EDIT, (event, token: unknown) => active?.restoreEditor(event.sender, event.senderFrame, token) ?? false);
+  ipcMain.handle(LIVE.EDIT, (event, token: unknown, image: unknown) => active?.restoreEditor(event.sender, event.senderFrame, token, image) ?? false);
   ipcMain.handle(LIVE.HOLD, (event, token: unknown) => active?.holdCapture(event.sender, event.senderFrame, token));
   // 所有通道都按 sender 反查浮层, 再由当前会话核对 token; 无会话或来源不符一律忽略。
   ipcMain.on(C.SHELL_READY, (event) => pool.markShellReady(event.sender, event.senderFrame));
@@ -244,6 +252,7 @@ async function startRegionScreenshot(): Promise<void> {
       helper: sessionHelper,
       windows: snap.windows,
       lastRegions,
+      openEditor: (image, display, selection) => editor.open(image, display, selection),
       onResult: (value) => {
         result = value;
         lastRegions.set(value.display.id, value.selection);
@@ -255,7 +264,7 @@ async function startRegionScreenshot(): Promise<void> {
         // export() 先结束会话再回传结果, 等这一轮同步代码走完再决定焦点去向。
         queueMicrotask(() => {
           const action = (result as RegionScreenshotResult | null)?.action ?? null;
-          if (snap.frontmostPid !== null && !takesFocus(action)) {
+          if (snap.frontmostPid !== null && !session.hasEditor && !takesFocus(action)) {
             void sessionHelper.activate(snap.frontmostPid).finally(() => sessionHelper.dispose());
           } else {
             sessionHelper.dispose();

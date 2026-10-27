@@ -3,6 +3,7 @@ import { Check, Download, Pencil, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Tip } from '@/components/ui/tooltip';
+import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { ScrollCapture } from '../../../shared/scrollCapture';
 import type { RegionCaptureBegin } from '../../../shared/regionCapture';
 import type { RegionScreenshotBitmap } from '../../../shared/regionScreenshot';
@@ -22,6 +23,10 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
   const sourceCanvas = useRef<HTMLCanvasElement | null>(null);
   const paintedRange = useRef({ start: -1, end: -1 });
   const scrollPaint = useRef(0);
+  const growthFrame = useRef(0);
+  const followGrowth = useRef(true);
+  const previousHeight = useRef(begin.first.height);
+  const reducedMotion = useReducedMotion();
   const followEdge = useRef<'start' | 'end'>('start');
   const runtime = useRef({ active: true, finishing: false, capture: new ScrollCapture(begin.first), pending: null as Promise<void> | null, automatic: false, stillFrames: 0, unmatchedSince: 0, movingUntil: 0 });
   const [height, setHeight] = useState(begin.first.height);
@@ -32,6 +37,7 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
   const layout = begin.scrollLayout!;
   const ratio = layout.preview.width / begin.first.width;
   const previewHeight = Math.min(layout.preview.height, Math.ceil(height * ratio));
+  const initialPreviewHeight = Math.min(layout.preview.height, Math.ceil(begin.first.height * ratio));
 
   function paintRange(destination = preview.current?.scrollTop ?? 0, force = false) {
     const target = canvas.current;
@@ -62,14 +68,36 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
 
   useLayoutEffect(() => {
     const view = preview.current;
-    if (!view) return;
+    const container = panel.current;
+    if (!view || !container) return;
+    cancelAnimationFrame(growthFrame.current);
+    followGrowth.current = true;
+    const fromHeight = container.getBoundingClientRect().height;
+    // Prepending rebases every existing pixel. Compensate before painting so
+    // the old content stays still while the new strip is revealed above it.
+    const prepend = followEdge.current === 'start' ? (height - previousHeight.current) * ratio : 0;
+    previousHeight.current = height;
+    view.scrollTop += prepend;
+    const fromScroll = view.scrollTop;
     const destination = followEdge.current === 'end' ? Math.max(0, height * ratio - previewHeight) : 0;
     paintRange(destination, true);
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    view.scrollTo({ top: destination, behavior: reduced ? 'instant' : 'smooth' });
-    // Geometry only changes after the stitcher accepts new pixels.
+    const token = getComputedStyle(container).getPropertyValue('--motion-base').trim();
+    const duration = reducedMotion ? 0 : (parseFloat(token) || 0) * (token.endsWith('ms') ? 1 : 1000);
+    const started = performance.now();
+    // One linear timeline for growing height and following the captured edge.
+    // New samples retarget from the currently displayed geometry, not the old
+    // destination; independent CSS-height and native-scroll animations drift.
+    const advance = (now: number) => {
+      const progress = duration > 0 ? Math.min(1, (now - started) / duration) : 1;
+      container.style.height = `${fromHeight + (previewHeight - fromHeight) * progress}px`;
+      if (followGrowth.current) view.scrollTop = fromScroll + (destination - fromScroll) * progress;
+      if (progress < 1) growthFrame.current = requestAnimationFrame(advance);
+    };
+    advance(started);
+    return () => cancelAnimationFrame(growthFrame.current);
+    // The capture layout is fixed for this session; only accepted pixels animate.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [height]);
+  }, [height, reducedMotion]);
 
   async function changeAutomatic(enabled: boolean) {
     const state = runtime.current;
@@ -163,8 +191,8 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
   const message = error === 'captureFailed' ? t('regionScreenshot.captureFailed') : t(`regionScreenshot.live.${error || status}`);
   return <div className="fixed inset-0 pointer-events-none select-none text-[var(--text-primary)]">
     <div aria-hidden className="absolute border border-[var(--text-primary)]" style={{ left: begin.selection.x - 1, top: begin.selection.y - 1, width: begin.selection.width + 2, height: begin.selection.height + 2, boxShadow: '0 0 0 1px var(--surface-elevated)' }} />
-    <aside ref={panel} aria-label={t('regionScreenshot.live.preview')} className="absolute overflow-hidden pointer-events-auto motion-reduce:!transition-none" style={{ left: layout.preview.x, bottom: layout.viewport.height - layout.preview.y - layout.preview.height, width: layout.preview.width, height: previewHeight, transitionProperty: 'height', transitionDuration: 'var(--motion-base)', transitionTimingFunction: 'var(--motion-ease-out)' }}>
-      <div ref={preview} tabIndex={0} className="h-full w-full overflow-y-auto overflow-x-hidden [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }} onScroll={() => {
+    <aside ref={panel} aria-label={t('regionScreenshot.live.preview')} className="absolute overflow-hidden pointer-events-auto" style={{ left: layout.preview.x, bottom: layout.viewport.height - layout.preview.y - layout.preview.height, width: layout.preview.width, height: initialPreviewHeight }}>
+      <div ref={preview} tabIndex={0} className="h-full w-full overflow-y-auto overflow-x-hidden [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', overflowAnchor: 'none', scrollBehavior: 'auto' }} onWheel={() => { followGrowth.current = false; }} onScroll={() => {
         cancelAnimationFrame(scrollPaint.current);
         scrollPaint.current = requestAnimationFrame(() => paintRange());
       }}>

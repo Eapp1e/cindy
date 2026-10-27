@@ -10,7 +10,7 @@ const urlParams = new URLSearchParams(window.location.search);
 const isRemoteDesktopViewer = urlParams.get('remoteDesktopViewer') === '1';
 const isResourceUsageWindow = urlParams.get('resourceUsageWindow') === '1';
 const isSidebarWindow = urlParams.get('sidebarWindow') === '1';
-const isRegionScreenshot = urlParams.get('regionScreenshot') === '1';
+const isRegionScreenshot = urlParams.get('regionScreenshot') === '1' || urlParams.get('regionScreenshotEditor') === '1';
 const isRegionScreenshotPin = urlParams.get('regionScreenshotPin') === '1';
 
 void (isRemoteDesktopViewer

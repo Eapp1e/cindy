@@ -6,6 +6,7 @@ export default {
   cases: {
     default: { about: 'Scroll overlapping text, finish, export the actual stitched pixels' },
     idle: { about: 'Repainting before the first scroll keeps the gesture hint, then scrolling still exports a long image' },
+    'preview-motion': { about: 'Prepending reveals new rows without jumping existing content; growth and scrolling share one animation' },
     inactive: { about: 'Only the display under the pointer shows capture controls' },
     drag: { about: 'Move the top toolbar horizontally without selecting pixels or leaving screen bounds' },
     video: { about: 'Record, annotate, pause/resume, save and decode a WebM' },
@@ -13,7 +14,8 @@ export default {
   },
   async ready(page) { await page.locator('canvas').first().waitFor(); },
   async check(page, ui) {
-    const isScroll = ui.case === 'default' || ui.case === 'idle';
+    if (ui.case === 'preview-motion') await page.emulateMedia({ reducedMotion: 'no-preference' });
+    const isScroll = ['default', 'idle', 'preview-motion'].includes(ui.case);
     const button = async (key) => page.getByRole('button', { name: await ui.t(key), exact: true });
     // e2e: exercise the real pointer capture path. Dragging the handle must move
     // only the toolbar, retain its top position, and keep both ends reachable.
@@ -83,6 +85,69 @@ export default {
       assert.equal(previewStyle.border, '0px', 'image has no surrounding frame');
       assert.equal(previewStyle.background, 'rgba(0, 0, 0, 0)', 'image has no opaque backing');
     }
+    if (ui.case === 'preview-motion') {
+      // e2e regression: at each real paint, follow a row already in the image.
+      // A prepended strip must grow upward without moving that old row down first.
+      // The existing long-preview test only checks final geometry, missing this jump.
+      const motion = await page.evaluate(async () => {
+        const panel = document.querySelector('aside');
+        const view = panel.querySelector('[tabindex="0"]');
+        const strip = view.firstElementChild;
+        const initial = panel.getBoundingClientRect();
+        const extent = strip.getBoundingClientRect().height;
+        const rows = [];
+        window.captureQa.manualScroll = 180;
+        await new Promise(resolve => {
+          const start = performance.now();
+          const tick = () => {
+            const box = panel.getBoundingClientRect();
+            rows.push({ height: box.height, bottom: box.bottom, anchor: box.top + strip.getBoundingClientRect().height - extent - view.scrollTop });
+            if (performance.now() - start < 650) requestAnimationFrame(tick); else resolve();
+          };
+          requestAnimationFrame(tick);
+        });
+        return { initial: { top: initial.top, height: initial.height }, rows };
+      });
+      assert.ok(motion.rows.at(-1).height > motion.initial.height + 10, 'new rows were stitched');
+      assert.ok(motion.rows.some(row => row.height > motion.initial.height + 1 && row.height < motion.rows.at(-1).height - 1), 'growth has intermediate frames');
+      assert.ok(motion.rows.every(row => Math.abs(row.bottom - 340) < 1), 'bottom anchor is stable');
+      const jump = Math.max(...motion.rows.map(row => Math.abs(row.anchor - motion.initial.top)));
+      assert.ok(jump < 2, `existing image rows jumped by ${jump.toFixed(2)}px during prepend`);
+      await ui.capture('smooth-prepend');
+      const frames = await page.evaluate(() => { window.captureQa.manualScroll = 300; return window.captureQa.frames; });
+      await page.waitForFunction(n => window.captureQa.frames >= n + 2, frames);
+      await page.evaluate(() => { window.captureQa.manualScroll = 420; });
+      await page.waitForFunction(() => {
+        const p = document.querySelector('aside');
+        return p.getBoundingClientRect().height >= p.getBoundingClientRect().width - 1;
+      });
+      const scrolling = await page.evaluate(async () => {
+        const panel = document.querySelector('aside');
+        const view = panel.querySelector('[tabindex="0"]');
+        const samples = [];
+        window.captureQa.manualScroll = 540;
+        await new Promise(resolve => {
+          const start = performance.now();
+          const tick = () => {
+            samples.push({ height: panel.getBoundingClientRect().height, scroll: view.scrollTop });
+            if (performance.now() - start < 650) requestAnimationFrame(tick); else resolve();
+          };
+          requestAnimationFrame(tick);
+        });
+        return { samples, end: view.scrollHeight - view.clientHeight };
+      });
+      assert.ok(scrolling.end > 0 && Math.abs(scrolling.samples.at(-1).scroll - scrolling.end) < 2, 'append follows the new bottom after reaching the panel limit');
+      assert.ok(scrolling.samples.some(row => row.scroll > 1 && row.scroll < scrolling.end - 1), 'following new rows has intermediate frames');
+      await ui.capture('smooth-append');
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await page.evaluate(() => { window.captureQa.manualScroll = 660; });
+      await page.waitForFunction(() => {
+        const view = document.querySelector('aside [tabindex="0"]');
+        return view.firstElementChild.getBoundingClientRect().height >= 450;
+      });
+      assert.ok(await page.locator('aside [tabindex="0"]').evaluate(el => Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop) < 2), 'reduced motion reaches the new bottom without animation');
+      return;
+    }
     if (ui.case === 'idle') {
       // e2e regression: the old panel displayed a lost-overlap warning after
       // 1.5 seconds even though the source had only repainted without scrolling.
@@ -143,10 +208,17 @@ export default {
       const box = await page.locator('canvas').first().boundingBox();
       await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.2); await page.mouse.down();
       await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.4, { steps: 8 }); await page.mouse.up();
-      await ui.capture('original-editor');
+      await ui.capture('independent-editor');
+      const dimensions = await page.locator('canvas').first().evaluate(el => [el.width, el.height]);
+      await (await button('remoteDesktop.fit')).click();
+      await (await button('remoteDesktop.actualSize')).click();
+      const review = page.locator('[tabindex="0"]');
+      await review.hover(); await page.mouse.wheel(0, 300);
+      await page.waitForFunction(() => document.querySelector('[tabindex="0"]').scrollTop > 0);
+      assert.deepEqual(await page.locator('canvas').first().evaluate(el => [el.width, el.height]), dimensions, 'zoom and scrolling do not resample the source');
       await page.getByRole('button', { name: `${await ui.t('regionScreenshot.save')} (Ctrl+S)`, exact: true }).click();
       await page.waitForFunction(() => window.captureQa.exportedHeight > 240);
-      assert.ok(await page.evaluate(() => window.captureQa.annotationPixels > 0), 'original editor annotations are included in the full-resolution export');
+      assert.ok(await page.evaluate(() => window.captureQa.annotationPixels > 0), 'independent editor annotations are included in the full-resolution export');
     } else {
       await (await button('regionScreenshot.save')).waitFor();
       await (await button('regionScreenshot.save')).click();

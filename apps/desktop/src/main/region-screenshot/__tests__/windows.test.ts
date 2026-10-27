@@ -10,11 +10,12 @@ const mocks = vi.hoisted(() => ({
     on = vi.fn();
     removeListener = vi.fn();
     getAllDisplays = vi.fn();
+    getDisplayMatching = (bounds: unknown) => ({ workArea: bounds });
     getCursorScreenPoint = () => ({ x: 20, y: 20 });
     dipToScreenPoint = (point: unknown) => point;
     screenToDipRect = (_window: unknown, rect: unknown) => rect;
   })(),
-  handlers: new Map<string, (...args: unknown[]) => void>(),
+  handlers: new Map<string, (...args: unknown[]) => unknown>(),
   register: vi.fn<(key: string, callback: () => void) => boolean>(() => true),
   unregister: vi.fn(),
   liveCapture: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock('electron', () => ({
   },
   clipboard: { writeImage: vi.fn(), writeText: vi.fn() },
   screen: mocks.screen,
+  nativeTheme: { shouldUseDarkColors: false },
   globalShortcut: { register: mocks.register, unregister: mocks.unregister },
   nativeImage: {
     createFromBitmap: (
@@ -47,19 +49,20 @@ vi.mock('electron', () => ({
     }),
   },
   Menu: { buildFromTemplate: vi.fn() },
-  ipcMain: { on: (name: string, fn: (...args: unknown[]) => void) => mocks.handlers.set(name, fn) },
+  ipcMain: { on: (name: string, fn: (...args: unknown[]) => unknown) => mocks.handlers.set(name, fn), handle: (name: string, fn: (...args: unknown[]) => unknown) => mocks.handlers.set(name, fn) },
 }));
 vi.mock('../pageWindow', () => ({ createScreenshotPageWindow: mocks.create }));
 vi.mock('../compose', () => ({ handOffScreenshotToTask: vi.fn() }));
 vi.mock('../save', () => ({ saveScreenshotImage: vi.fn(), saveRegionRecording: mocks.saveRecording }));
 vi.mock('../liveCapture', () => ({ captureLiveRegion: mocks.liveCapture, RegionVideoCapture: class { frame = mocks.liveCapture; stop() {} } }));
 vi.mock('../../i18n', () => ({ getResolvedMainLocale: () => 'en', t: (key: string) => key }));
-vi.mock('../../logger', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn() }) }));
+vi.mock('../../logger', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() }) }));
 import { OverlayPool, hideScreenshotOverlay, showScreenshotOverlay } from '../overlays';
 import { RegionScreenshotSession } from '../session';
 import { acquireOverlayEscape } from '../../overlayEscape';
 import { closeAllPins, openPin, registerPinIpc } from '../pins';
-import { REGION_SCREENSHOT_PIN_CHANNEL as P } from '../../../shared/regionScreenshot';
+import { ScreenshotEditor } from '../editor';
+import { REGION_SCREENSHOT_EDITOR_CHANNEL as E, REGION_SCREENSHOT_PIN_CHANNEL as P } from '../../../shared/regionScreenshot';
 
 let nextId = 0;
 function fakeWindow() {
@@ -69,10 +72,15 @@ function fakeWindow() {
     webContents: Object.assign(new EventEmitter(), {
       id: ++nextId,
       mainFrame: {},
+      isDestroyed: () => destroyed,
       send: vi.fn(),
       sendInputEvent: vi.fn(),
     }),
     isFocused: vi.fn(() => false),
+    isMinimized: () => false, isMaximized: () => false, isFullScreen: () => false,
+    setTitle: vi.fn(),
+    minimize: vi.fn(),
+    show: vi.fn(() => { visible = true; window.emit('show'); }),
     isDestroyed: () => destroyed,
     isVisible: () => visible,
     setVisibleOnAllWorkspaces: vi.fn(),
@@ -88,6 +96,7 @@ function fakeWindow() {
     }),
     hide: vi.fn(() => {
       visible = false;
+      window.emit('hide');
     }),
     destroy: vi.fn(() => {
       destroyed = true;
@@ -190,9 +199,9 @@ describe('screenshot window lifecycle', () => {
     expect(mocks.liveCapture).toHaveBeenCalledTimes(1);
   });
 
-  // Long capture returns to the same editor; restoring must stop source sampling and
-  // wait for its painted acknowledgement. Earlier tests only close the live session.
-  it('restores the original editor after scrolling and exports the full long image', async () => {
+  // User regression: Edit restored a full-screen black overlay. A valid image must
+  // transfer to the independent editor and retire the capture; rejected images retain it. tier: unit.
+  it('hands the long image to a separate editor and retires the capture overlays', async () => {
     const largeDisplay = { ...display, bounds: { x: 0, y: 0, width: 1280, height: 900 }, scaleFactor: 1 };
     mocks.screen.getAllDisplays.mockReturnValue([largeDisplay]);
     const overlay = pool.ensure(largeDisplay)!;
@@ -201,22 +210,29 @@ describe('screenshot window lifecycle', () => {
     const crop = { getSize: () => ({ width: 400, height: 300 }), toBitmap: () => Buffer.alloc(400 * 300 * 4), resize: () => crop };
     const source = { getSize: () => ({ width: 1280, height: 900 }), toBitmap: () => Buffer.alloc(1280 * 900 * 4), crop: () => crop } as unknown as NativeImage;
     const result = vi.fn();
-    const session = new RegionScreenshotSession({ pool, captures: [{ display: largeDisplay, image: source }], helper: {} as SnapshotHelper, windows: [], lastRegions: new Map(), onClosed: vi.fn(), onResult: result });
+    const openEditor = vi.fn(() => true);
+    const session = new RegionScreenshotSession({ pool, captures: [{ display: largeDisplay, image: source }], helper: {} as SnapshotHelper, windows: [], lastRegions: new Map(), onClosed: vi.fn(), onResult: result, openEditor });
     await session.open();
     session.painted(owner, owner.mainFrame, session.token);
     const selection = { x: 0, y: 0, width: 400, height: 300 };
     session.startLive(owner, owner.mainFrame, session.token, 'scroll', selection);
     expect(windows[0].setBounds).toHaveBeenLastCalledWith(largeDisplay.bounds, false);
     expect(windows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
-    expect(session.restoreEditor(owner, owner.mainFrame, 'stale')).toBe(false);
-    expect(session.restoreEditor(owner, owner.mainFrame, session.token)).toBe(true);
-    expect(windows[0].setBounds).toHaveBeenLastCalledWith(largeDisplay.bounds, false);
-    expect(windows[0].setOpacity).toHaveBeenLastCalledWith(0);
-    expect(await session.liveFrame(owner, owner.mainFrame, session.token, true)).toBeNull();
-    session.painted(owner, owner.mainFrame, session.token);
-    expect(windows[0].setOpacity).toHaveBeenLastCalledWith(1);
-    expect(session.export(owner, owner.mainFrame, session.token, { action: 'save', selection, image: { width: 400, height: 1500, data: new Uint8Array(400 * 1500 * 4) } })).toBe(true);
-    expect(result.mock.calls[0][0].image.getSize()).toEqual({ width: 400, height: 1500 });
+    const long = { width: 400, height: 1500, data: new Uint8Array(400 * 1500 * 4) };
+    expect(session.restoreEditor(owner, owner.mainFrame, 'stale', long)).toBe(false);
+    expect(session.restoreEditor(owner, {} as Electron.WebFrameMain, session.token, long)).toBe(false);
+    expect(session.restoreEditor(owner, owner.mainFrame, session.token, { ...long, data: new Uint8Array(4) })).toBe(false);
+    expect(openEditor).not.toHaveBeenCalled();
+    openEditor.mockReturnValueOnce(false);
+    expect(session.restoreEditor(owner, owner.mainFrame, session.token, long)).toBe(false);
+    expect(session.isClosed).toBe(false);
+    expect(session.restoreEditor(owner, owner.mainFrame, session.token, long)).toBe(true);
+    expect(openEditor).toHaveBeenLastCalledWith(long, largeDisplay, selection);
+    expect(session.isClosed).toBe(true);
+    expect(session.hasEditor).toBe(true);
+    expect(windows[0].isVisible()).toBe(false);
+    expect(await session.liveFrame(owner, owner.mainFrame, session.token, false)).toBeNull();
+    expect(result).not.toHaveBeenCalled();
   });
 
   // Auto scrolling operates on the source app: stale tokens must never trigger it,
@@ -311,6 +327,91 @@ describe('screenshot window lifecycle', () => {
     active!.close();
     pool.destroyAll();
     expect(second.isDestroyed()).toBe(true);
+  });
+
+  // Independent editor adds a new IPC owner and per-document readiness to the shared lifecycle.
+  // Minimal input: close, reopen, then deliver stale or foreign document signals. tier: unit.
+  // Frameless controls must minimize only their own current document (IPC ownership contract).
+  it('prewarms an editor, waits for each image, reuses its window and rejects stale or foreign exports', () => {
+    const result = vi.fn();
+    const editor = new ScreenshotEditor(result);
+    editor.registerIpc();
+    editor.prewarm();
+    const win = windows[0];
+    const event = { sender: win.webContents, senderFrame: win.webContents.mainFrame };
+    const bitmap = { width: 4, height: 80, data: new Uint8Array(1280) };
+    const selection = { x: 1, y: 2, width: 4, height: 8 };
+    const signal = (channel: string, ...args: unknown[]) => mocks.handlers.get(channel)!(event, ...args);
+    try {
+      expect(win.isVisible()).toBe(false);
+      signal(E.READY);
+      expect(editor.open(bitmap, display, selection)).toBe(true);
+      const first = win.webContents.send.mock.calls.find(([name]) => name === E.BEGIN)![1];
+      expect(win.isVisible()).toBe(false);
+      mocks.handlers.get(E.PAINTED)!({ ...event, senderFrame: {} }, first.token);
+      expect(win.isVisible()).toBe(false);
+      signal(E.PAINTED, first.token);
+      expect(win.isVisible()).toBe(true);
+      mocks.handlers.get(E.MINIMIZE)!({ ...event, sender: {} }, first.token);
+      mocks.handlers.get(E.MINIMIZE)!({ ...event, senderFrame: {} }, first.token);
+      signal(E.MINIMIZE, 'stale');
+      expect(win.minimize).not.toHaveBeenCalled();
+      signal(E.MINIMIZE, first.token);
+      expect(win.minimize).toHaveBeenCalledOnce();
+      expect(editor.open(bitmap, display, selection)).toBe(false);
+      signal(E.CANCEL, first.token);
+      expect(win.isVisible()).toBe(false);
+      expect(win.isDestroyed()).toBe(false);
+      expect(win.webContents.send).toHaveBeenCalledWith(E.END);
+      expect(editor.open(bitmap, display, selection)).toBe(true);
+      const second = win.webContents.send.mock.calls.filter(([name]) => name === E.BEGIN).at(-1)![1];
+      expect(second.token).not.toBe(first.token);
+      signal(E.PAINTED, first.token);
+      expect(win.isVisible()).toBe(false);
+      signal(E.PAINTED, second.token);
+      expect(win.isVisible()).toBe(true);
+      const payload = { action: 'copy', image: bitmap };
+      expect(signal(E.EXPORT, first.token, payload)).toBe(false);
+      expect(mocks.handlers.get(E.EXPORT)!({ ...event, sender: {} }, second.token, payload)).toBe(false);
+      expect(signal(E.EXPORT, second.token, { ...payload, image: { ...bitmap, height: 8 } })).toBe(false);
+      expect(signal(E.EXPORT, second.token, payload)).toBe(true);
+      expect(result).toHaveBeenCalledOnce();
+      expect(result.mock.calls[0][0].image.getSize()).toEqual({ width: 4, height: 80 });
+      expect(result.mock.calls[0][0].selection).toEqual(selection);
+      expect(windows).toHaveLength(1);
+      expect(win.isVisible()).toBe(false);
+    } finally { editor.dispose(); }
+    expect(win.isDestroyed()).toBe(true);
+  });
+
+  // A failed React tree must not remain cached forever; retry once, then permit a fresh user open.
+  it('recovers an editor rendering failure once and releases a document after repeated crashes', () => {
+    const editor = new ScreenshotEditor(vi.fn());
+    editor.registerIpc();
+    const bitmap = { width: 2, height: 2, data: new Uint8Array(16) };
+    const selection = { x: 0, y: 0, width: 2, height: 2 };
+    const ready = (win: ReturnType<typeof fakeWindow>) => {
+      const event = { sender: win.webContents, senderFrame: win.webContents.mainFrame };
+      mocks.handlers.get(E.READY)!(event);
+      const payload = win.webContents.send.mock.calls.find(([name]) => name === E.BEGIN)![1];
+      mocks.handlers.get(E.PAINTED)!(event, payload.token);
+      return event;
+    };
+    try {
+      expect(editor.open(bitmap, display, selection)).toBe(true);
+      const first = ready(windows[0]);
+      mocks.handlers.get(E.FAILED)!(first);
+      expect(windows[0].isDestroyed()).toBe(true);
+      expect(windows).toHaveLength(2);
+      ready(windows[1]);
+      expect(windows[1].isVisible()).toBe(true);
+      windows[1].webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+      expect(windows[1].isDestroyed()).toBe(true);
+      expect(windows).toHaveLength(2);
+      expect(editor.open(bitmap, display, selection)).toBe(true);
+      ready(windows[2]);
+      expect(windows[2].isVisible()).toBe(true);
+    } finally { editor.dispose(); }
   });
 
   it('prewarms without showing or transforming the macOS Dock identity, and reuses the shell', () => {

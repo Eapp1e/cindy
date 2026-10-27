@@ -26,6 +26,7 @@ import {
   type RegionRect,
   type RegionScreenshotAction,
   type RegionScreenshotBegin,
+  type RegionScreenshotBitmap,
   type RegionScreenshotWindow,
 } from '../../shared/regionScreenshot';
 import { hideScreenshotOverlay, showScreenshotOverlay, type OverlayPool, type OverlayWindow } from './overlays';
@@ -65,6 +66,7 @@ export interface RegionScreenshotSessionDeps {
   windows: readonly SnapshotWindow[];
   lastRegions: ReadonlyMap<number, RegionRect>;
   onResult: (result: RegionScreenshotResult) => void;
+  openEditor?: (image: RegionScreenshotBitmap, display: Display, selection: RegionRect) => boolean;
   onClosed: () => void;
 }
 
@@ -86,6 +88,7 @@ export class RegionScreenshotSession {
   readonly token = randomUUID();
   private readonly members = new Map<number, Member>();
   private closed = false;
+  private handedToEditor = false;
   private exporting = false;
   private videoCapture: RegionVideoCapture | null = null;
   private live: { member: Member; selection: RegionRect; mode: RegionCaptureMode; sampling: boolean; lastSample: number; editing: boolean; layout: ScrollCaptureLayout | null; automatic: boolean; target: SnapshotWindow | null; ignoring: boolean; previewHeight: number } | null = null;
@@ -110,6 +113,8 @@ export class RegionScreenshotSession {
   get isClosed(): boolean {
     return this.closed;
   }
+
+  get hasEditor(): boolean { return this.handedToEditor; }
 
   /** 打开浮层; 一块屏都没准备好时返回 false 并结束会话。 */
   async open(): Promise<boolean> {
@@ -396,17 +401,17 @@ export class RegionScreenshotSession {
     } finally { live.sampling = false; this.updateScrollHitTest(); }
   }
 
-  restoreEditor(sender: WebContents, frame: Electron.WebFrameMain | null, token: unknown): boolean {
+  restoreEditor(sender: WebContents, frame: Electron.WebFrameMain | null, token: unknown, rawImage: unknown): boolean {
     const member = this.member(sender, frame, token);
     if (!member || !this.live || this.live.member !== member || this.live.mode !== 'scroll' || this.live.editing || this.exporting) return false;
-    this.live.editing = true;
-    this.stopScrolling();
-    member.painted = false;
-    member.overlay.window.setOpacity(0);
-    member.overlay.window.setBounds(member.capture.display.bounds, false);
-    showScreenshotOverlay(member.overlay.window);
-    // The existing editor must paint before the full-size overlay is revealed again.
-    this.revealTimer = setTimeout(() => { if (!member.painted) this.close(); }, REVEAL_FALLBACK_MS);
+    const image = validateRegionBitmap(rawImage, {
+      width: Math.ceil(this.live.selection.width * member.capture.display.scaleFactor) + 2,
+      height: 32768,
+    });
+    if (!image || image.width * image.height > 32_000_000) return false;
+    if (!this.deps.openEditor?.(image, member.capture.display, this.live.selection)) return false;
+    this.handedToEditor = true;
+    this.close();
     return true;
   }
 

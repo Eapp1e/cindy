@@ -5,6 +5,7 @@ import {
   type RegionRect,
   type RegionScreenshotBegin,
   type RegionScreenshotExport,
+  type RegionScreenshotBitmap,
 } from '../shared/regionScreenshot';
 import { exposeScreenshotPageElectronApi, onPayload } from './screenshotPageBridge';
 import { REGION_CAPTURE_CHANNEL as LIVE, type RegionCaptureMode } from '../shared/regionCapture';
@@ -18,7 +19,7 @@ exposeScreenshotPageElectronApi();
 contextBridge.exposeInMainWorld('regionScreenshot', {
   autoScroll: (token: string, enabled: boolean) => ipcRenderer.invoke(LIVE.AUTO_SCROLL, token, enabled),
   startLive: (token: string, mode: RegionCaptureMode, selection: RegionRect) => ipcRenderer.invoke(LIVE.START, token, mode, selection),
-  restoreEditor: (token: string) => ipcRenderer.invoke(LIVE.EDIT, token),
+  restoreEditor: (token: string, image: RegionScreenshotBitmap) => ipcRenderer.invoke(LIVE.EDIT, token, image),
   holdCapture: (token: string) => ipcRenderer.invoke(LIVE.HOLD, token),
   liveFrame: (token: string, keys: boolean, previewHeight?: number) => ipcRenderer.invoke(LIVE.FRAME, token, keys, previewHeight),
   saveRecording: (token: string, bytes: Uint8Array, format: 'webm' | 'gif') => ipcRenderer.invoke(LIVE.SAVE, token, bytes, format),

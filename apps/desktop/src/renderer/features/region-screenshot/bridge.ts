@@ -12,7 +12,7 @@ import type { RegionCaptureBegin, RegionCaptureFrame, RegionCaptureMode } from '
 /** 框选浮层 preload (regionScreenshotPreload) 暴露的能力。 */
 export interface RegionScreenshotOverlayBridge {
   autoScroll(token: string, enabled: boolean): Promise<boolean>;
-  restoreEditor(token: string): Promise<boolean>;
+  restoreEditor(token: string, image: RegionScreenshotBitmap): Promise<boolean>;
   holdCapture(token: string): Promise<void>;
   startLive(token: string, mode: RegionCaptureMode, selection: RegionRect): Promise<RegionCaptureBegin | null>;
   liveFrame(token: string, keys: boolean, previewHeight?: number): Promise<RegionCaptureFrame | null>;
@@ -49,6 +49,7 @@ export interface RegionScreenshotPinBridge {
 declare global {
   interface Window {
     regionScreenshot?: RegionScreenshotOverlayBridge;
+    regionScreenshotEditor?: Pick<RegionScreenshotOverlayBridge, 'shellReady' | 'onBegin' | 'onEnd' | 'painted' | 'cancel' | 'exportImage'> & { failed(): void; minimize(token: string): void };
     regionScreenshotPin?: RegionScreenshotPinBridge;
   }
 }

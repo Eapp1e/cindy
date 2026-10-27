@@ -172,7 +172,7 @@ export const APP_SHORTCUT_DEFINITIONS: ReadonlyArray<AppShortcutDefinition> = [
     platforms: ['darwin', 'win32'],
     getDefaultCombos: (platform) =>
       platform === 'darwin'
-        ? [combo('Digit2', { meta: true, shift: true })]
+        ? [combo('KeyS', { meta: true, shift: true })]
         : [combo('KeyS', { alt: true, shift: true })],
   },
   {

@@ -64,6 +64,7 @@ import { ScreenshotModeBar, ScreenshotStyleBar, ScreenshotToolbar, TOOL_SHORTCUT
 import { SCREENSHOT_INK, SCREENSHOT_OVERLAY, type ScreenshotInk } from './screenshotColors';
 import { LiveCapturePanel } from './LiveCapturePanel';
 import { ScrollCaptureOverlay } from './ScrollCaptureOverlay';
+import { ScreenshotEditorViewport } from './ScreenshotEditorViewport';
 import type { RegionCaptureBegin, RegionCaptureMode } from '../../../shared/regionCapture';
 
 /** 小于这个尺寸的拖动视为误点, 不形成选区。 */
@@ -153,7 +154,7 @@ function handlePosition(rect: RegionRect, handle: RegionHandle): RegionPoint {
  * 两种模式取同一值 (白描边 + 暗色外圈); 工具条、放大镜、尺寸标签等界面 chrome
  * 一律走主题 token, 跟随 Cindy 的浅色 / 深色模式。
  */
-export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOverlayBridge }) {
+export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridge: RegionScreenshotOverlayBridge; imageEditor?: boolean }) {
   const { t } = useTranslation();
   const isMac = window.electronAPI?.platform === 'darwin';
   const modLabel = isMac ? '⌘' : 'Ctrl+';
@@ -271,7 +272,11 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
       // 隐藏期间用户可能改了主题; 每次截图按当前设置重新套用。
       themeService.applyTheme(getInitialThemeVariant().theme);
       resetInteraction();
-      setActiveDisplay(payload.cursor !== null);
+      setActiveDisplay(imageEditor || payload.cursor !== null);
+      if (imageEditor) {
+        setLongResult({ image: payload.frame, selection: payload.lastRegion! });
+        setSelection({ x: 0, y: 0, width: payload.frame.width, height: payload.frame.height });
+      }
       initialCursorRef.current = payload.cursor ?? null;
       // 各工具上次用的颜色 / 粗细跨截图保留 (浮层复用, 本次运行内有效)。
       const canvas = frameRef.current;
@@ -291,7 +296,7 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
         frameData,
       });
       // 窗口显示后才会合成新帧: 等两帧再报告已绘制, main 随即淡入。
-      requestAnimationFrame(() =>
+      if (!imageEditor) requestAnimationFrame(() =>
         requestAnimationFrame(() => {
           bridge.painted(payload.token);
           if (document.hasFocus()) bridge.focused(payload.token);
@@ -338,7 +343,7 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('blur', onBlur);
     };
-  }, [bridge, resetInteraction]);
+  }, [bridge, resetInteraction, imageEditor]);
 
   useLayoutEffect(() => {
     const canvas = frameRef.current;
@@ -346,8 +351,8 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
     canvas.width = session.frameData.width;
     canvas.height = session.frameData.height;
     canvas.getContext('2d')?.putImageData(session.frameData, 0, 0);
-    if (longResult) requestAnimationFrame(() => requestAnimationFrame(() => bridge.painted(session.token)));
-  }, [session, live, longResult, bridge]);
+    if (imageEditor) bridge.painted(session.token);
+  }, [session, live, longResult, bridge, imageEditor]);
 
   // ── 标注图层 ───────────────────────────────────────────────────────────
 
@@ -370,7 +375,7 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
   useEffect(() => {
     const canvas = annotationCanvasRef.current;
     if (!canvas) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = imageEditor ? 1 : window.devicePixelRatio || 1;
     const width = Math.round(viewport.width * dpr);
     const height = Math.round(viewport.height * dpr);
     if (canvas.width !== width || canvas.height !== height) {
@@ -386,7 +391,7 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const visible = annotations.filter((a) => !(editing?.id && a.id === editing.id));
     drawAnnotations(ctx, draft ? [...visible, draft] : visible, source);
-  }, [annotations, draft, editing?.id, viewport.width, viewport.height, annotationSource, session]);
+  }, [annotations, draft, editing?.id, viewport.width, viewport.height, annotationSource, session, imageEditor]);
 
   // ── 撤销 / 重做 ────────────────────────────────────────────────────────
 
@@ -585,10 +590,13 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
 
   // ── 指针 ───────────────────────────────────────────────────────────────
 
-  const localPoint = (event: { clientX: number; clientY: number }): RegionPoint => ({
-    x: Math.min(viewport.width, Math.max(0, event.clientX)),
-    y: Math.min(viewport.height, Math.max(0, event.clientY)),
-  });
+  const localPoint = (event: { clientX: number; clientY: number }): RegionPoint => {
+    const bounds = imageEditor ? rootRef.current?.getBoundingClientRect() : null;
+    return {
+      x: Math.min(viewport.width, Math.max(0, bounds ? (event.clientX - bounds.left) * viewport.width / bounds.width : event.clientX)),
+      y: Math.min(viewport.height, Math.max(0, bounds ? (event.clientY - bounds.top) * viewport.height / bounds.height : event.clientY)),
+    };
+  };
 
   const startEditing = (at: RegionPoint, existing: TextAnnotation | null) => {
     const style = state.current.styles.text;
@@ -826,7 +834,7 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
       refreshHover(localPoint(event));
       return;
     }
-    cancel();
+    if (!imageEditor) cancel();
   };
 
   // ── 键盘 ───────────────────────────────────────────────────────────────
@@ -1055,39 +1063,68 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
 
   async function finishScroll(image: RegionScreenshotBitmap) {
     if (!session || !live) return;
-    if (!await bridge.restoreEditor(session.token)) throw new Error('Screenshot editor unavailable');
-    const ratio = Math.min(1 / session.scaleFactor, (session.viewport.width - 64) / image.width, (session.viewport.height - 144) / image.height);
-    const width = image.width * ratio, height = image.height * ratio;
-    const rect = { x: (session.viewport.width - width) / 2, y: (session.viewport.height - height - 64) / 2, width, height };
-    setCaptureMode('image');
-    setActiveDisplay(true);
-    setLongResult({ image, selection: live.selection });
-    setSession({ ...session, frameData: bitmapToImageData(image), frameSize: { width: image.width, height: image.height } });
-    setSelection(rect);
-    setAnnotations([]); setUndoStack([]); setRedoStack([]); setDraft(null); setSelectedId(null); setTool(null);
-    setPointer(null); setLive(null); liveRef.current = false;
+    if (!await bridge.restoreEditor(session.token, image)) throw new Error('Screenshot editor unavailable');
   }
 
   if (live && session) return live.mode === 'scroll'
     ? <ScrollCaptureOverlay begin={live} token={session.token} bridge={bridge} onEdit={finishScroll} />
     : <LiveCapturePanel autoStart begin={live} token={session.token} bridge={bridge} />;
 
-  return (
+  const toolbar = (imageEditor || toolbarStyle) && (imageEditor || activeDisplay) && (
+        <div
+          className={imageEditor ? "flex flex-col items-start gap-2" : "absolute flex flex-col items-end gap-2"}
+          style={imageEditor ? undefined : toolbarStyle ?? undefined}
+          onPointerEnter={() => setOverToolbar(true)}
+          onPointerLeave={() => setOverToolbar(false)}
+        >
+          {captureMode === 'image' ? <ScreenshotToolbar
+            ref={toolbarRef}
+            tool={tool}
+            canUndo={undoStack.length > 0}
+            canRedo={redoStack.length > 0}
+            shortcutMod={modLabel}
+            onTool={(next) => {
+              commitEditing();
+              setSelectedId(null);
+              setTool((current) => (current === next ? null : next));
+            }}
+            onUndo={undo}
+            onRedo={redo}
+            onAction={(action) => void runAction(action)}
+            onCancel={cancel}
+          /> : <div ref={toolbarRef} className="pointer-events-auto flex items-center gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-1" onPointerDown={(event) => event.stopPropagation()}>
+            <Button size="xs" variant="cta" onClick={() => void startLive(captureMode)}>{t(captureMode === 'scroll' ? 'regionScreenshot.live.startScroll' : 'regionScreenshot.live.start')}</Button>
+            <Button size="xs" variant="secondary" tone="quiet" onClick={cancel}>{t('regionScreenshot.cancel')}</Button>
+          </div>}
+          {liveError && <p role="alert" className="mt-1 rounded-xl bg-[var(--surface-elevated)] p-2 text-12 text-[var(--text-primary)]">{t('regionScreenshot.live.noRoom')}</p>}
+          {captureMode === 'image' && styleTool && activeStyle && (
+            <ScreenshotStyleBar
+              tool={styleTool}
+              color={activeStyle.color}
+              size={activeStyle.size}
+              onColor={(color) => applyStyle({ color })}
+              onSize={(size) => applyStyle({ size })}
+            />
+          )}
+        </div>
+      );
+
+  const canvasContent = (
     <div
       ref={rootRef}
-      className="fixed inset-0 select-none overflow-hidden"
-      style={{ cursor, background: SCREENSHOT_OVERLAY.backdrop }}
+      className={imageEditor ? "relative h-full w-full select-none overflow-hidden" : "fixed inset-0 select-none overflow-hidden"}
+      style={{ cursor, background: imageEditor ? undefined : SCREENSHOT_OVERLAY.backdrop }}
       onPointerEnter={() => {
         if (!state.current.session) return;
         setActiveDisplay(true);
-        window.focus();
+        if (!imageEditor) window.focus();
       }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerLeave={() => {
         // 指针移到另一块屏: 这块屏不再显示放大镜和吸附高亮。
-        setActiveDisplay(false);
+        if (!imageEditor) setActiveDisplay(false);
         setAiMenuOpen(false);
         setPointer(null);
         if (!state.current.selection && !state.current.drag) setHover(null);
@@ -1098,7 +1135,7 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
     >
       <canvas ref={frameRef} className={longResult ? 'absolute block' : 'absolute inset-0 block h-full w-full'} style={longResult && selection ? { left: selection.x, top: selection.y, width: selection.width, height: selection.height } : undefined} />
       <canvas ref={annotationCanvasRef} className="pointer-events-none absolute inset-0 block h-full w-full" />
-      {session &&
+      {session && !imageEditor &&
         (highlight ? (
           <div
             className="pointer-events-none absolute"
@@ -1146,7 +1183,7 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
           />
         );
       })()}
-      {session && sizeLabel && highlight && (
+      {session && !imageEditor && sizeLabel && highlight && (
         <div
           className="pointer-events-none absolute rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-2 py-0.5 text-12 tabular-nums text-[var(--text-primary)]"
           style={{ left: Math.min(highlight.x, viewport.width - 120), top: sizeLabelTop }}
@@ -1182,50 +1219,14 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
           }}
         />
       )}
-      {session && activeDisplay && <div className="absolute top-3 z-20 w-max max-w-[calc(100%-24px)] -translate-x-1/2" style={{ left: modeBarCenter ?? viewport.width / 2 }} onPointerEnter={() => setOverToolbar(true)} onPointerLeave={() => setOverToolbar(false)}>
+      {session && !imageEditor && activeDisplay && <div className="absolute top-3 z-20 w-max max-w-[calc(100%-24px)] -translate-x-1/2" style={{ left: modeBarCenter ?? viewport.width / 2 }} onPointerEnter={() => setOverToolbar(true)} onPointerLeave={() => setOverToolbar(false)}>
         <ScreenshotModeBar mode={captureMode} finished={!!longResult} canAsk={isSelected && !dragging} aiMenuOpen={aiMenuOpen}
           onPositionChange={setModeBarCenter}
           onMode={(mode) => { commitEditing(); setCaptureMode(mode); setTool(null); setSelectedId(null); setAiMenuOpen(false); setLiveError(false); }}
           onToggleAiMenu={() => setAiMenuOpen((open) => !open)} onAction={(action) => void runAction(action)} />
       </div>}
-      {toolbarStyle && activeDisplay && (
-        <div
-          className="absolute flex flex-col items-end gap-2"
-          style={toolbarStyle}
-          onPointerEnter={() => setOverToolbar(true)}
-          onPointerLeave={() => setOverToolbar(false)}
-        >
-          {captureMode === 'image' ? <ScreenshotToolbar
-            ref={toolbarRef}
-            tool={tool}
-            canUndo={undoStack.length > 0}
-            canRedo={redoStack.length > 0}
-            shortcutMod={modLabel}
-            onTool={(next) => {
-              commitEditing();
-              setSelectedId(null);
-              setTool((current) => (current === next ? null : next));
-            }}
-            onUndo={undo}
-            onRedo={redo}
-            onAction={(action) => void runAction(action)}
-            onCancel={cancel}
-          /> : <div ref={toolbarRef} className="pointer-events-auto flex items-center gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-1" onPointerDown={(event) => event.stopPropagation()}>
-            <Button size="xs" variant="cta" onClick={() => void startLive(captureMode)}>{t(captureMode === 'scroll' ? 'regionScreenshot.live.startScroll' : 'regionScreenshot.live.start')}</Button>
-            <Button size="xs" variant="secondary" tone="quiet" onClick={cancel}>{t('regionScreenshot.cancel')}</Button>
-          </div>}
-          {liveError && <p role="alert" className="mt-1 rounded-xl bg-[var(--surface-elevated)] p-2 text-12 text-[var(--text-primary)]">{t('regionScreenshot.live.noRoom')}</p>}
-          {captureMode === 'image' && styleTool && activeStyle && (
-            <ScreenshotStyleBar
-              tool={styleTool}
-              color={activeStyle.color}
-              size={activeStyle.size}
-              onColor={(color) => applyStyle({ color })}
-              onSize={(size) => applyStyle({ size })}
-            />
-          )}
-        </div>
-      )}
+      {!imageEditor && toolbar}
+
       {showMagnifier && pointer && session && (
         <Magnifier
           frame={frameRef.current}
@@ -1238,4 +1239,8 @@ export function RegionScreenshotOverlay({ bridge }: { bridge: RegionScreenshotOv
       )}
     </div>
   );
+  return imageEditor ? <ScreenshotEditorViewport key={session?.token ?? 'empty'} image={session?.frameSize ?? null} tools={toolbar} onAction={(action) => void runAction(action)}
+    onMinimize={() => { if (session) window.regionScreenshotEditor?.minimize(session.token); }}
+    onClose={() => { if (session) bridge.cancel(session.token); }}
+  >{canvasContent}</ScreenshotEditorViewport> : canvasContent;
 }

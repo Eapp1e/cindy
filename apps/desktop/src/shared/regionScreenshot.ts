@@ -38,6 +38,19 @@ export const REGION_SCREENSHOT_CHANNEL = {
   ABANDON: 'region-screenshot:abandon',
 } as const;
 
+/** Local-only image editor. Every incoming signal is bound to its top-level renderer. */
+export const REGION_SCREENSHOT_EDITOR_CHANNEL = {
+  READY: 'region-screenshot-editor:ready',
+  BEGIN: 'region-screenshot-editor:begin',
+  END: 'region-screenshot-editor:end',
+  PAINTED: 'region-screenshot-editor:painted',
+  CANCEL: 'region-screenshot-editor:cancel',
+  MINIMIZE: 'region-screenshot-editor:minimize',
+  EXPORT: 'region-screenshot-editor:export',
+  ACTIVITY: 'region-screenshot-editor:activity',
+  FAILED: 'region-screenshot-editor:failed',
+} as const;
+
 export const REGION_SCREENSHOT_PIN_CHANNEL = {
   /** send: 贴图页面已挂载。 */
   SHELL_READY: 'region-screenshot-pin:shell-ready',
