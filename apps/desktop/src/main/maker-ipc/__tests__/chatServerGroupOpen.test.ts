@@ -122,6 +122,70 @@ describe('Chat Server group open latency (simulated 100ms per request)', () => {
   });
   afterEach(() => { service.dispose(); vi.useRealTimers(); vi.unstubAllEnvs(); vi.clearAllMocks(); });
 
+  // Unit: the production topic entry used to bypass persisted history on every open.
+  // Restart, old-page edits and a permission reset must all share the room projection.
+  it('reopens topics without downloading members, roots or covered pages and updates old replies', async () => {
+    const disk = new Map<string, ChatHistoryState>();
+    const store: ChatHistoryStore = { read: async room => structuredClone(disk.get(room)), write: async (room, state) => {
+      if (state) disk.set(room, structuredClone(state)); else disk.delete(room);
+    } };
+    const open = () => withChatServer(local as unknown as BotGroupChatService,
+      { onChanged, chatHistoryStore: () => store } as unknown as BotGroupChatServiceDeps);
+    const old = { ...message, id: '50000000-0000-4000-8000-000000000002', seq: '2', revision: 1, threadRootId: message.id };
+    const latest = { ...old, id: '50000000-0000-4000-8000-000000000003', seq: '3' };
+    let revoked = false;
+    fixture.handle.mockImplementation(route => route.startsWith('/changes?')
+      ? revoked ? { status: 403, body: { error: { code: 'NOT_MEMBER' } } }
+        : { body: { cursor: '58', changes: [{ type: 'message.updated', data: { message: { ...old, revision: 2,
+          content: [{ type: 'text', text: 'old reply edited' }] } } }], hasMore: false } }
+      : route.endsWith(`/messages/${message.id}`) ? { body: message }
+      : route.endsWith('/members') ? { body: [] }
+      : revoked && route.includes('/execution-failures?') ? { status: 403, body: { error: { code: 'NOT_MEMBER' } } }
+      : route.includes('/messages?') ? { body: route.includes('before=3') ? [old] : [latest] } : response(route));
+    service.dispose(); service = open();
+    const input = { groupId: rooms[0], rootId: message.id };
+    const initial = await timed(() => service.chatServer!.thread(input));
+    expect(initial.value).toMatchObject({ ok: true, root: { id: message.id }, replies: [{ id: latest.id }] });
+    await timed(() => service.chatServer!.thread({ ...input, before: 3 }));
+    const warm = await timed(() => service.chatServer!.thread(input));
+    expect(warm.routes.filter(route => /\/(snapshot|members|messages)(\?|\/|$)/.test(route))).toEqual([]);
+    expect(warm.routes).toHaveLength(1); // Only execution failures; no changed read position in this scenario.
+    service.dispose(); service = open();
+    const restored = await timed(() => service.chatServer!.thread({ ...input, sourceMessageIds: [old.id] }));
+    expect(restored.value).toMatchObject({ ok: true, historyRevision: expect.any(String),
+      messageUpdates: [{ id: old.id, content: 'old reply edited' }] });
+    expect(restored.routes.filter(route => /\/(snapshot|members|messages)(\?|\/|$)/.test(route))).toEqual([]);
+    revoked = true;
+    expect((await timed(() => service.chatServer!.thread(input))).value).toMatchObject({ ok: false, errorCode: 'NOT_MEMBER' });
+    expect(disk.size).toBe(0);
+  });
+
+  // Unit: the topic composes independently awaited root, page and failure reads;
+  // a membership reset between them must retry, just like the group entry point.
+  it('retries a topic if membership resets while execution failures are loading', async () => {
+    const disk = new Map<string, ChatHistoryState>();
+    const store: ChatHistoryStore = { read: async room => structuredClone(disk.get(room)), write: async (room, state) => {
+      if (state) disk.set(room, structuredClone(state)); else disk.delete(room);
+    } };
+    fixture.page = [{ ...message, id: '50000000-0000-4000-8000-000000000002', seq: '2', threadRootId: message.id }];
+    fixture.handle.mockImplementation(route => route.startsWith('/changes?')
+      ? { body: { cursor: '57', changes: [], hasMore: false } }
+      : route.endsWith(`/messages/${message.id}`) ? { body: message } : response(route));
+    service.dispose(); service = withChatServer(local as unknown as BotGroupChatService,
+      { onChanged, chatHistoryStore: () => store } as unknown as BotGroupChatServiceDeps);
+    const input = { groupId: rooms[0], rootId: message.id };
+    const before = await timed(() => service.chatServer!.thread(input)); await connected();
+    fixture.timing = route => ({ serve: 100, deliver: route.includes('/execution-failures?') ? 500 : 100 });
+    const pending = service.chatServer!.thread(input);
+    await vi.advanceTimersByTimeAsync(120);
+    fixture.page = [];
+    fixture.sockets[0].emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${rooms[0]}`, cursor: '58',
+      changes: [{ type: 'membership.changed' }] }));
+    const after = await timed(() => pending);
+    expect(after.value).toMatchObject({ ok: true, replies: [] });
+    expect(after.value.ok && after.value.historyRevision).not.toBe(before.value.ok && before.value.historyRevision);
+  });
+
   // Unit: a membership reset while execution metadata is loading must not relabel old messages as the new history.
   it('retries a composed group view if its cached history resets during another HTTP read', async () => {
     const disk = new Map<string, ChatHistoryState>();
