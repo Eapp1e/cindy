@@ -17,6 +17,7 @@ export interface ScrollCaptureLayout {
   viewport: { width: number; height: number };
   preview: RegionRect;
   auto: RegionRect;
+  actions: RegionRect;
 }
 export const REGION_CAPTURE_CHANNEL = {
   START: 'region-screenshot:live-start',
@@ -31,12 +32,13 @@ export const MAX_RECORDING_MS = 5 * 60_000;
 
 /** The preview/actions belong to the selection and never cover source pixels. */
 export function scrollCaptureLayout(selection: RegionRect, viewport: { width: number; height: number }): ScrollCaptureLayout | null {
-  const gap = 12, minimumWidth = 208, preferredWidth = Math.min(640, Math.max(400, selection.width * 0.6)), footer = 40;
+  if (viewport.width < 304) return null;
+  const gap = 12, minimumWidth = 208, preferredWidth = Math.min(640, Math.max(400, selection.width * 0.6));
   const right = selection.x + selection.width;
   const bottom = selection.y + selection.height;
   const rightSpace = viewport.width - right - gap - 8;
   const leftSpace = selection.x - gap - 8;
-  const useRight = rightSpace >= minimumWidth && (rightSpace >= preferredWidth || rightSpace >= leftSpace);
+  const useRight = rightSpace >= minimumWidth;
   const sideSpace = useRight ? rightSpace : leftSpace;
   const width = Math.min(preferredWidth, sideSpace >= minimumWidth ? sideSpace : preferredWidth);
   const sideX = sideSpace >= minimumWidth ? (useRight ? right + gap : selection.x - width - gap) : null;
@@ -44,18 +46,24 @@ export function scrollCaptureLayout(selection: RegionRect, viewport: { width: nu
   const above = selection.y >= 52;
   if (!below && !above) return null;
   const auto = { x: Math.max(0, Math.min(viewport.width - 132, selection.x + (selection.width - 132) / 2)), y: below ? bottom + 8 : selection.y - 40, width: 132, height: 32 };
+  const actions = { x: Math.max(152, Math.min(viewport.width - 152, right - 144)), y: auto.y, width: 144, height: 32 };
+  auto.x = Math.max(8, Math.min(auto.x, actions.x - auto.width - gap));
   if (sideX !== null) {
-    const height = Math.min(viewport.height - 32, Math.max(480, selection.height + 64));
-    return { viewport, auto, preview: { x: sideX, y: Math.max(8, Math.min(selection.y, viewport.height - height - 8)), width, height } };
+    const anchor = Math.min(viewport.height - 8, bottom);
+    return { viewport, auto, actions, preview: { x: sideX, y: 8, width, height: anchor - 8 } };
   }
   // Wide selections place the thumbnail above/below, still on this display.
-  const available = below ? viewport.height - bottom - 16 : selection.y - 16;
+  const available = below ? viewport.height - bottom - 56 : selection.y - 56;
   const previewHeight = Math.min(220, available);
-  if (previewHeight < footer + 48) return null;
-  const preview = { x: Math.max(8, Math.min(viewport.width - width - 8, right - width)), y: below ? bottom + 8 : selection.y - previewHeight - 8, width, height: previewHeight };
-  auto.x = Math.max(8, preview.x - auto.width - gap);
-  if (auto.x + auto.width > preview.x - gap) return null;
-  return { viewport, auto, preview };
+  if (previewHeight < 48) return null;
+  const preview = { x: Math.max(8, Math.min(viewport.width - width - 8, right - width)), y: below ? bottom + 48 : selection.y - previewHeight - 48, width, height: previewHeight };
+  return { viewport, auto, actions, preview };
+}
+
+/** Shared by native hit-testing and the bottom-anchored preview. */
+export function scrollPreviewBounds(layout: ScrollCaptureLayout, visibleHeight: number): RegionRect {
+  const height = Math.max(1, Math.min(layout.preview.height, visibleHeight));
+  return { ...layout.preview, y: layout.preview.y + layout.preview.height - height, height };
 }
 
 /** Choose a panel position wholly outside the capture, including on a second monitor. */

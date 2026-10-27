@@ -322,6 +322,39 @@ describe('screenshot window lifecycle', () => {
     expect(windows[0].isVisible()).toBe(false);
   });
 
+  // Startup regression (unit): on two displays, the first renderer may paint
+  // while the second shell is still loading. It must not reveal a frozen desktop
+  // before the native windows have their final bounds and visibility.
+  it('keeps both displays hidden until their startup geometry is established', async () => {
+    const second = { ...display, id: display.id + 1, bounds: { ...display.bounds, x: display.bounds.width } };
+    const firstOverlay = pool.ensure(display)!;
+    const secondOverlay = pool.ensure(second)!;
+    const first = firstOverlay.window.webContents;
+    const other = secondOverlay.window.webContents;
+    pool.markShellReady(first, first.mainFrame);
+    const session = new RegionScreenshotSession({ pool, captures: [{ display, image }, { display: second, image }], helper: {} as SnapshotHelper, windows: [], lastRegions: new Map(), onClosed: vi.fn(), onResult: vi.fn() });
+    for (const [index, owner] of [first, other].entries()) {
+      windows[index].webContents.send.mockImplementation((channel: string) => {
+        if (channel === 'region-screenshot:begin') session.painted(owner, owner.mainFrame, session.token);
+      });
+    }
+    const opening = session.open();
+    try {
+      await Promise.resolve();
+      expect(windows[0].setOpacity).not.toHaveBeenCalledWith(1);
+      pool.markShellReady(other, other.mainFrame);
+      await opening;
+      for (const [index, screen] of [display, second].entries()) {
+        expect(windows[index].setBounds).toHaveBeenLastCalledWith(screen.bounds, false);
+        expect(windows[index].setOpacity).toHaveBeenLastCalledWith(1);
+      }
+    } finally {
+      pool.markShellReady(other, other.mainFrame);
+      await opening;
+      session.close();
+    }
+  });
+
   it('keeps screenshots on workArea changes but closes on scale changes', async () => {
     const overlay = pool.ensure(display)!;
     pool.markShellReady(overlay.window.webContents, overlay.window.webContents.mainFrame);

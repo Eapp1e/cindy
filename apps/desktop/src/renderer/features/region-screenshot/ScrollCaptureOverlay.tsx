@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Check, Download, Pencil, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -19,28 +19,57 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
   const canvas = useRef<HTMLCanvasElement>(null);
   const preview = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLElement>(null);
-  const runtime = useRef({ active: true, finishing: false, capture: new ScrollCapture(begin.first), bitmap: begin.first, pending: null as Promise<void> | null, automatic: false, stillFrames: 0, unmatchedSince: 0 });
+  const sourceCanvas = useRef<HTMLCanvasElement | null>(null);
+  const paintedRange = useRef({ start: -1, end: -1 });
+  const scrollPaint = useRef(0);
+  const followEdge = useRef<'start' | 'end'>('start');
+  const runtime = useRef({ active: true, finishing: false, capture: new ScrollCapture(begin.first), pending: null as Promise<void> | null, automatic: false, stillFrames: 0, unmatchedSince: 0, movingUntil: 0 });
   const [height, setHeight] = useState(begin.first.height);
   const [automatic, setAutomatic] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('scrollHint');
   const [error, setError] = useState('');
   const layout = begin.scrollLayout!;
+  const ratio = layout.preview.width / begin.first.width;
+  const previewHeight = Math.min(layout.preview.height, Math.ceil(height * ratio));
 
-  function paint(image: RegionScreenshotBitmap, edge: 'start' | 'end' = 'start') {
+  function paintRange(destination = preview.current?.scrollTop ?? 0, force = false) {
     const target = canvas.current;
-    if (!target) return;
-    const source = document.createElement('canvas');
+    const view = preview.current;
+    if (!target || !view) return;
+    const capture = runtime.current.capture;
+    const visibleRows = Math.ceil(layout.preview.height / ratio);
+    const current = Math.floor(view.scrollTop / ratio);
+    const next = Math.floor(destination / ratio);
+    const previous = paintedRange.current;
+    if (!force && current >= previous.start && Math.min(capture.height, current + visibleRows) <= previous.end) return;
+    // Buffer the current and destination viewports so native smooth scrolling
+    // moves existing pixels. Never allocate/convert the entire growing image.
+    const start = Math.max(0, Math.min(current, next) - Math.ceil(visibleRows / 2));
+    const end = Math.min(capture.height, Math.max(current, next) + visibleRows * 2);
+    const image = capture.image(start, end - start);
+    const source = sourceCanvas.current ??= document.createElement('canvas');
     source.width = image.width; source.height = image.height;
     source.getContext('2d')!.putImageData(bitmapToImageData(image), 0, 0);
-    // Keep text at a stable scale as the capture grows. The preview scrolls;
-    // fitting the entire long image into a fixed box would make it unreadable.
-    const ratio = Math.min(1, (layout.preview.width - 32) / image.width);
-    target.width = Math.max(1, Math.round(image.width * ratio));
-    target.height = Math.max(1, Math.round(image.height * ratio));
+    const density = Math.min(2, window.devicePixelRatio || 1);
+    target.width = Math.max(1, Math.round(image.width * ratio * density));
+    target.height = Math.max(1, Math.round(image.height * ratio * density));
+    target.style.top = `${start * ratio}px`;
+    target.style.height = `${image.height * ratio}px`;
     target.getContext('2d')!.drawImage(source, 0, 0, target.width, target.height);
-    if (preview.current) preview.current.scrollTop = edge === 'end' ? preview.current.scrollHeight : 0;
+    paintedRange.current = { start, end };
   }
+
+  useLayoutEffect(() => {
+    const view = preview.current;
+    if (!view) return;
+    const destination = followEdge.current === 'end' ? Math.max(0, height * ratio - previewHeight) : 0;
+    paintRange(destination, true);
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    view.scrollTo({ top: destination, behavior: reduced ? 'instant' : 'smooth' });
+    // Geometry only changes after the stitcher accepts new pixels.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [height]);
 
   async function changeAutomatic(enabled: boolean) {
     const state = runtime.current;
@@ -62,13 +91,14 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
     }
     const match = state.capture.add(frame.image);
     if (match === 'append' || match === 'prepend') {
-      state.bitmap = state.capture.image();
-      setHeight(state.bitmap.height); paint(state.bitmap, match === 'append' ? 'end' : 'start');
+      followEdge.current = match === 'append' ? 'end' : 'start';
+      setHeight(state.capture.height);
+      state.movingUntil = performance.now() + 400;
       state.stillFrames = 0; state.unmatchedSince = 0; setStatus('scrollHint'); setError('');
     } else if (match === 'unmatched') {
       state.unmatchedSince ||= performance.now();
       if (performance.now() - state.unmatchedSince > 1500) {
-        if (state.bitmap.height > begin.first.height) setStatus('overlap');
+        if (state.capture.height > begin.first.height) setStatus('overlap');
         if (state.automatic) await changeAutomatic(false);
       }
     } else {
@@ -87,8 +117,9 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
       await bridge.holdCapture(token);
       await state.pending;
       if (!state.active) return;
-      if (action === 'edit') await onEdit(state.bitmap);
-      else if (!await bridge.exportImage(token, { action, selection: begin.selection, image: state.bitmap })) throw new Error('Export rejected');
+      const bitmap = state.capture.image();
+      if (action === 'edit') await onEdit(bitmap);
+      else if (!await bridge.exportImage(token, { action, selection: begin.selection, image: bitmap })) throw new Error('Export rejected');
     } catch {
       if (state.active) { state.finishing = false; setBusy(false); setError('exportFailed'); }
     }
@@ -97,7 +128,6 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
   useEffect(() => {
     const state = runtime.current;
     state.active = true;
-    paint(begin.first);
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
       if (!state.active) return;
@@ -106,7 +136,10 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
       state.pending = sample().catch(() => { if (state.active && !state.finishing) { setError('captureFailed'); void changeAutomatic(false); } });
       await state.pending;
       state.pending = null;
-      if (state.active) timer = setTimeout(tick, Math.max(0, 200 - (performance.now() - started)));
+      // Track active manual scrolling more closely; idle and automatic scrolling
+      // keep their existing cadence (and automatic scrolling speed).
+      const interval = !state.automatic && performance.now() < state.movingUntil ? 100 : 200;
+      if (state.active) timer = setTimeout(tick, Math.max(0, interval - (performance.now() - started)));
     };
     timer = setTimeout(tick, 200);
     const key = (event: KeyboardEvent) => {
@@ -116,7 +149,7 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
       }
     };
     window.addEventListener('keydown', key);
-    return () => { state.active = false; clearTimeout(timer); window.removeEventListener('keydown', key); void bridge.holdCapture(token).catch(() => {}); };
+    return () => { state.active = false; clearTimeout(timer); cancelAnimationFrame(scrollPaint.current); window.removeEventListener('keydown', key); void bridge.holdCapture(token).catch(() => {}); };
     // A fresh session mounts a fresh overlay; mutable capture state lives in runtime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -130,17 +163,20 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
   const message = error === 'captureFailed' ? t('regionScreenshot.captureFailed') : t(`regionScreenshot.live.${error || status}`);
   return <div className="fixed inset-0 pointer-events-none select-none text-[var(--text-primary)]">
     <div aria-hidden className="absolute border border-[var(--text-primary)]" style={{ left: begin.selection.x - 1, top: begin.selection.y - 1, width: begin.selection.width + 2, height: begin.selection.height + 2, boxShadow: '0 0 0 1px var(--surface-elevated)' }} />
-    <aside ref={panel} aria-label={t('regionScreenshot.live.preview')} className="absolute flex flex-col items-center overflow-hidden rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] pointer-events-auto" style={{ left: layout.preview.x, top: layout.preview.y, width: layout.preview.width, height: Math.min(layout.preview.height, Math.ceil(height * Math.min(1, (layout.preview.width - 32) / begin.first.width)) + 64) }}>
-      <div className="shrink-0 py-1 text-11 tabular-nums">{begin.first.width} × {height}</div>
-      <div ref={preview} className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden" style={{ scrollbarGutter: 'stable both-edges' }}>
-        <canvas ref={canvas} className="mx-auto block max-w-full" />
+    <aside ref={panel} aria-label={t('regionScreenshot.live.preview')} className="absolute overflow-hidden pointer-events-auto motion-reduce:!transition-none" style={{ left: layout.preview.x, bottom: layout.viewport.height - layout.preview.y - layout.preview.height, width: layout.preview.width, height: previewHeight, transitionProperty: 'height', transitionDuration: 'var(--motion-base)', transitionTimingFunction: 'var(--motion-ease-out)' }}>
+      <div ref={preview} tabIndex={0} className="h-full w-full overflow-y-auto overflow-x-hidden [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }} onScroll={() => {
+        cancelAnimationFrame(scrollPaint.current);
+        scrollPaint.current = requestAnimationFrame(() => paintRange());
+      }}>
+        <div className="relative w-full" style={{ height: Math.ceil(height * ratio) }}><canvas ref={canvas} className="absolute left-0 block w-full" /></div>
       </div>
-      {(error || status !== 'scrollHint') && <p role="alert" className="px-2 text-11 text-[var(--text-secondary)]">{message}</p>}
       <p role="status" className="sr-only">{message}</p>
-      <div className="flex w-full shrink-0 justify-center gap-2 border-t border-[var(--border-default)] py-1">
-        {actions.map(({ key, label, Icon, run }) => <Tip key={key} text={label} side="top"><Button size="xs" variant={key === 'copy' ? 'cta' : 'secondary'} className="w-7 px-0" aria-label={label} disabled={busy} onClick={run}><Icon size={16} aria-hidden /></Button></Tip>)}
-      </div>
+      <span className="sr-only">{begin.first.width} × {height}</span>
+      {(error || status !== 'scrollHint') && <p role="alert" className="absolute inset-x-0 top-0 bg-[var(--surface-elevated)] px-2 py-1 text-11 text-[var(--text-secondary)] pointer-events-none">{message}</p>}
     </aside>
+    <div className="absolute flex items-center justify-center gap-1 rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] pointer-events-auto" style={{ left: layout.actions.x, top: layout.actions.y, width: layout.actions.width, height: layout.actions.height }}>
+        {actions.map(({ key, label, Icon, run }) => <Tip key={key} text={label} side="top"><Button size="xs" variant={key === 'copy' ? 'cta' : 'secondary'} className="w-7 px-0" aria-label={label} disabled={busy} onClick={run}><Icon size={16} aria-hidden /></Button></Tip>)}
+    </div>
     <div className="absolute flex items-center justify-center rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] pointer-events-auto" style={{ left: layout.auto.x, top: layout.auto.y, width: layout.auto.width, height: layout.auto.height }}>
       <Tip text={t('regionScreenshot.live.scrollHint')} side="top"><Button size="sm" variant="secondary" disabled={busy} onClick={() => void changeAutomatic(!automatic)}>{t(`regionScreenshot.live.${automatic ? 'stopScroll' : 'autoScroll'}`)}</Button></Tip>
     </div>

@@ -170,10 +170,20 @@ export class ScrollCapture {
     return before ? 'prepend' : 'append';
   }
 
-  image(): RegionScreenshotBitmap {
-    const data = new Uint8Array(this.rows * this.previous.width * 4);
+  /** Preview reads only its visible rows; full export is assembled on demand. */
+  image(start = 0, count = this.rows): RegionScreenshotBitmap {
+    start = Math.max(0, Math.min(this.rows, Math.floor(start)));
+    const height = Math.max(0, Math.min(this.rows - start, Math.ceil(count)));
+    const stride = this.previous.width * 4;
+    const data = new Uint8Array(height * stride);
+    const from = start * stride, to = from + data.length;
     let offset = 0;
-    for (const part of this.parts) { data.set(part, offset); offset += part.length; }
-    return { width: this.previous.width, height: this.rows, data };
+    for (const part of this.parts) {
+      const left = Math.max(from, offset), right = Math.min(to, offset + part.length);
+      if (right > left) data.set(part.subarray(left - offset, right - offset), left - from);
+      offset += part.length;
+      if (offset >= to) break;
+    }
+    return { width: this.previous.width, height, data };
   }
 }

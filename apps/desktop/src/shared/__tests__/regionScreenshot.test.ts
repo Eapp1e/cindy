@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ScrollCapture, matchScrollFrames } from '../scrollCapture';
-import { capturePanelBounds, scrollCaptureLayout, validRecordingBytes } from '../regionCapture';
+import { capturePanelBounds, scrollCaptureLayout, scrollPreviewBounds, validRecordingBytes } from '../regionCapture';
 import type { RegionScreenshotBitmap } from '../regionScreenshot';
 
 import {
@@ -29,6 +29,37 @@ function scrollingFrame(offset: number, header = 0, footer = 0): RegionScreensho
 }
 
 describe('continuous region capture', () => {
+  // Preview must copy only visible rows, including across stitched parts; full
+  // export must remain identical after scrolling both ways. tier: unit.
+  it('reads bounded preview rows across appended and prepended seams without changing export', () => {
+    const capture = new ScrollCapture(scrollingFrame(24, 8, 8));
+    capture.add(scrollingFrame(0, 8, 8));
+    capture.add(scrollingFrame(48, 8, 8));
+    const full = capture.image();
+    for (const start of [0, 15, 75, 130]) {
+      const image = capture.image(start, 20);
+      expect(image.height).toBe(Math.min(20, full.height - start));
+      expect(image.data).toEqual(full.data.slice(start * 64 * 4, (start + 20) * 64 * 4));
+    }
+    expect(capture.image()).toEqual(full);
+  });
+
+  // User report: preview started at the top instead of the selection bottom.
+  // Cover right-first placement, left fallback and viewport clipping. tier: unit.
+  it('anchors the side preview to the selection bottom and grows upwards', () => {
+    for (const selection of [{ x: 300, y: 200, width: 600, height: 600 }, { x: 1400, y: 20, width: 500, height: 950 }]) {
+      const layout = scrollCaptureLayout(selection, { width: 1920, height: 1080 })!;
+      expect(layout.preview.y + layout.preview.height).toBe(selection.y + selection.height);
+      expect(layout.preview.y).toBeGreaterThanOrEqual(8);
+      for (const height of [80, 400, 2000]) {
+        const bounds = scrollPreviewBounds(layout, height);
+        expect(bounds.y + bounds.height).toBe(selection.y + selection.height);
+        expect(bounds.height).toBe(Math.min(height, layout.preview.height));
+      }
+    }
+    const layout = scrollCaptureLayout({ x: 900, y: 200, width: 600, height: 600 }, { width: 1920, height: 1080 })!;
+    expect(layout.preview.x).toBeGreaterThanOrEqual(1500);
+  });
   it('stitches downward motion while keeping fixed header and footer exactly once', () => {
     const first = scrollingFrame(0, 8, 8);
     const capture = new ScrollCapture(first);
@@ -148,7 +179,8 @@ describe('continuous region capture', () => {
     const viewport = { width: 1920, height: 1080 };
     for (const region of [{ x: 300, y: 800, width: 600, height: 200 }, { x: 10, y: 20, width: 1900, height: 700 }]) {
       const layout = scrollCaptureLayout(region, viewport)!;
-      for (const rect of [layout.preview, layout.auto]) {
+      expect(layout.auto.x + layout.auto.width).toBeLessThanOrEqual(layout.actions.x);
+      for (const rect of [layout.preview, layout.auto, layout.actions]) {
         expect(rect.x).toBeGreaterThanOrEqual(0);
         expect(rect.y).toBeGreaterThanOrEqual(0);
         expect(rect.x + rect.width).toBeLessThanOrEqual(viewport.width);

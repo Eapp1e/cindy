@@ -74,6 +74,14 @@ export default {
       await (await button('regionScreenshot.live.startScroll')).click();
       assert.equal(await (await button('regionScreenshot.live.pause')).count(), 0, 'scrolling has no separate capture toolbar');
       assert.equal(await page.getByRole('complementary').count(), 1, 'the selection has an inline stitched preview');
+      const previewStyle = await page.getByRole('complementary').evaluate(el => {
+        const box = el.getBoundingClientRect(), css = getComputedStyle(el);
+        return { bottom: box.bottom, x: box.x, border: css.borderWidth, background: css.backgroundColor };
+      });
+      assert.equal(previewStyle.bottom, 340, 'preview starts at the selection bottom');
+      assert.ok(previewStyle.x > 580, 'preview prefers the right side');
+      assert.equal(previewStyle.border, '0px', 'image has no surrounding frame');
+      assert.equal(previewStyle.background, 'rgba(0, 0, 0, 0)', 'image has no opaque backing');
     }
     if (ui.case === 'idle') {
       // e2e regression: the old panel displayed a lost-overlap warning after
@@ -99,11 +107,12 @@ export default {
         await page.evaluate(() => { window.captureQa.scrollLimit = 600; });
         await page.waitForFunction(() => window.captureQa.scrollFrames >= 21);
         assert.equal(await thumbnail.evaluate(el => el.width), width);
-        const viewport = thumbnail.locator('..');
+        assert.equal((await page.getByRole('complementary').boundingBox()).y + (await page.getByRole('complementary').boundingBox()).height, 340, 'preview keeps its bottom anchor as it grows');
+        const viewport = page.getByRole('complementary').locator('[tabindex="0"]');
         assert.ok(await viewport.evaluate(el => el.scrollHeight > el.clientHeight && el.scrollTop > 0));
         await ui.capture('long-preview');
         await viewport.hover(); await page.mouse.wheel(0, -1000);
-        await page.waitForFunction(() => document.querySelector('aside canvas').parentElement.scrollTop === 0);
+        await page.waitForFunction(() => document.querySelector('aside [tabindex="0"]').scrollTop === 0);
       }
     }
     if (!isScroll) {

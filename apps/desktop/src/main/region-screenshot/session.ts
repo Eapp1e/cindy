@@ -13,7 +13,7 @@ import { createLogger } from '../logger';
 import { getResolvedMainLocale } from '../i18n';
 import { acquireOverlayEscape } from '../overlayEscape';
 import { throwIpcError } from '../utils/ipcValidate';
-import { capturePanelBounds, scrollCaptureLayout, validRecordingBytes, type ScrollCaptureLayout, type RegionCaptureBegin, type RegionCaptureFrame, type RegionCaptureMode } from '../../shared/regionCapture';
+import { capturePanelBounds, scrollCaptureLayout, scrollPreviewBounds, validRecordingBytes, type ScrollCaptureLayout, type RegionCaptureBegin, type RegionCaptureFrame, type RegionCaptureMode } from '../../shared/regionCapture';
 import { captureLiveRegion, RegionVideoCapture } from './liveCapture';
 import { saveRegionRecording } from './save';
 import {
@@ -123,10 +123,6 @@ export class RegionScreenshotSession {
       if (!overlay || !(await this.deps.pool.waitForShell(overlay)) || this.closed) continue;
       if (overlay.window.isDestroyed()) continue;
       this.members.set(overlay.window.webContents.id, { overlay, capture, painted: false });
-      overlay.window.webContents.send(
-        REGION_SCREENSHOT_CHANNEL.BEGIN,
-        this.beginPayload(capture, locale, cursor),
-      );
     }
     if (this.closed) return false;
     if (this.members.size === 0) {
@@ -134,7 +130,7 @@ export class RegionScreenshotSession {
       this.close();
       return false;
     }
-    // 先以全透明显示: 页面在可见状态下才会合成新画面, 画完 (PAINTED) 再淡入,
+    // 先以全透明显示: 页面在可见状态下才会合成新画面, 画完 (PAINTED) 再显示,
     // 避免闪出上一次截图残留的合成帧或底色。
     for (const { overlay, capture } of this.members.values()) {
       const { window } = overlay;
@@ -146,6 +142,14 @@ export class RegionScreenshotSession {
     }
     this.revealTimer = setTimeout(() => this.reveal(), REVEAL_FALLBACK_MS);
     this.holdEscape();
+    // 所有屏幕的位置稳定后才发送画面。否则快的 renderer 会在另一块屏还等
+    // SHELL_READY 时提前 PAINTED / reveal，随后又被隐藏、定位，造成整屏跳动。
+    for (const { overlay, capture } of this.members.values()) {
+      overlay.window.webContents.send(
+        REGION_SCREENSHOT_CHANNEL.BEGIN,
+        this.beginPayload(capture, locale, cursor),
+      );
+    }
     return true;
   }
 
@@ -310,7 +314,7 @@ export class RegionScreenshotSession {
     const center = { x: display.bounds.x + selection.x + selection.width / 2, y: display.bounds.y + selection.y + selection.height / 2 };
     const physical = process.platform === 'win32' ? screen.dipToScreenPoint(center) : center;
     const target = this.deps.windows.find(({ rect }) => physical.x >= rect[0] && physical.x < rect[2] && physical.y >= rect[1] && physical.y < rect[3]) ?? null;
-    this.live = { member, selection, mode: mode as RegionCaptureMode, sampling: false, lastSample: 0, editing: false, layout, automatic: false, target, ignoring: false, previewHeight: layout ? Math.min(layout.preview.height, Math.ceil(croppedSize.height * Math.min(1, (layout.preview.width - 32) / croppedSize.width)) + 64) : 0 };
+    this.live = { member, selection, mode: mode as RegionCaptureMode, sampling: false, lastSample: 0, editing: false, layout, automatic: false, target, ignoring: false, previewHeight: layout ? Math.min(layout.preview.height, Math.ceil(croppedSize.height * layout.preview.width / croppedSize.width)) : 0 };
     for (const other of this.members.values()) {
       if (other === member) continue;
       other.overlay.window.hide();
@@ -331,7 +335,7 @@ export class RegionScreenshotSession {
     const point = screen.getCursorScreenPoint();
     const { bounds } = live.member.capture.display;
     const x = point.x - bounds.x, y = point.y - bounds.y;
-    const interactive = [{ ...live.layout.preview, height: live.previewHeight }, live.layout.auto].some((r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
+    const interactive = [scrollPreviewBounds(live.layout, live.previewHeight), live.layout.auto, live.layout.actions].some((r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
     if (live.ignoring === !interactive) return;
     live.ignoring = !interactive;
     live.member.overlay.window.setIgnoreMouseEvents(!interactive, { forward: true });
@@ -360,7 +364,7 @@ export class RegionScreenshotSession {
     const live = this.live;
     if (!member || !live || live.member !== member || live.editing || live.sampling || this.exporting || Date.now() - live.lastSample < 80) return null;
     // The visual preview grows with the image; only its visible bounds take input.
-    if (live.layout && typeof previewHeight === 'number' && Number.isFinite(previewHeight)) live.previewHeight = Math.max(64, Math.min(live.layout.preview.height, Math.ceil(previewHeight)));
+    if (live.layout && typeof previewHeight === 'number' && Number.isFinite(previewHeight)) live.previewHeight = Math.max(1, Math.min(live.layout.preview.height, Math.ceil(previewHeight)));
     live.sampling = true;
     live.lastSample = Date.now();
     try {
