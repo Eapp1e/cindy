@@ -80,7 +80,7 @@ function toLocal(rect: RegionRect, display: Display): RegionRect {
 
 /**
  * 一次框选截图: 每块已定格的显示器借用一个预热浮层, 用户在其中一块上完成选区与
- * 标注后, 页面把最终图交回来, 会话结束 (隐藏浮层) 再执行动作。一次性对象。
+ * 标注后, 页面把最终图交回来, 会话结束后隐藏并销毁浮层, 再执行动作。一次性对象。
  */
 export class RegionScreenshotSession {
   readonly token = randomUUID();
@@ -496,8 +496,8 @@ export class RegionScreenshotSession {
       });
       if (!member.overlay.window.isDestroyed()) {
         member.overlay.window.webContents.send(REGION_SCREENSHOT_CHANNEL.END);
-        hideScreenshotOverlay(member.overlay.window);
       }
+      this.deps.pool.retire(member.overlay);
       this.members.delete(id);
     }
     if (this.members.size === 0) {
@@ -547,11 +547,8 @@ export class RegionScreenshotSession {
     screen.removeListener('display-metrics-changed', this.onDisplayMetricsChanged);
     for (const { overlay } of this.members.values()) {
       const { window } = overlay;
-      if (window.isDestroyed()) continue;
-      // 页面收到 END 后清空画面与交互态; 窗口先透明再隐藏, 下次显示前不会露出残留。
-      window.webContents.send(REGION_SCREENSHOT_CHANNEL.END);
-      window.setOpacity(0);
-      hideScreenshotOverlay(window);
+      if (!window.isDestroyed()) window.webContents.send(REGION_SCREENSHOT_CHANNEL.END);
+      this.deps.pool.retire(overlay);
     }
     this.members.clear();
     this.deps.onClosed();

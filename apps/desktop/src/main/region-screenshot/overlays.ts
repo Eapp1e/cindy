@@ -49,18 +49,20 @@ interface Entry extends OverlayWindow {
 }
 
 /**
- * 每块显示器一个全屏框选浮层, 隐藏预热、截图时显示、结束后隐藏复用。
+ * 每块显示器一个全屏框选浮层, 隐藏预热、截图时显示、结束后销毁并重新预热。
  *
  * 与 §3.1 独立辅助窗口基线的差异 (全局热键 + 置顶系统浮层的平台约束):
  * - 不随主窗口挂父子关系、不进任务栏 / Dock, 置顶在屏保层级;
  * - 「就绪」分两段: 预热时页面挂载, 每次截图再等定格画面绘制后才显示
  *   (见 RegionScreenshotSession); 隐藏前由页面清空画面与交互态;
  * - 显示器增减或分辨率变化时按显示器重建, 不尝试在原窗口上迁移。
+ * - 透明浮层用后销毁, 避免下次截图继承原生窗口的合成状态; 未使用的预热壳仍可复用。
  * 其余安全配置、sender 校验、故障隔离与有界重建照基线执行。
  */
 export class OverlayPool {
   private readonly byDisplay = new Map<number, Entry>();
   private readonly byContents = new Map<number, Entry>();
+  private readonly retiring = new Map<Entry, ReturnType<typeof setTimeout>>();
   private crashes: number[] = [];
   private disabled = false;
   private onGone: ((overlay: OverlayWindow) => void) | null = null;
@@ -137,6 +139,29 @@ export class OverlayPool {
   destroyAll(): void {
     this.disabled = true;
     this.reset();
+    for (const [entry, timer] of this.retiring) {
+      clearTimeout(timer);
+      this.destroy(entry);
+    }
+    this.retiring.clear();
+  }
+
+  /**
+   * 截图结束后销毁用过的透明浮层, 避免下一次截图继承原生窗口的透明度与合成状态。
+   * 先从池中移除, 即使下一次截图立即开始, 也只会取得新窗口。
+   */
+  retire(overlay: OverlayWindow): void {
+    const entry = overlay as Entry;
+    this.forget(entry);
+    const { window } = entry;
+    if (window.isDestroyed() || this.retiring.has(entry)) return;
+    window.setOpacity(0);
+    hideScreenshotOverlay(window);
+    // 让当前 export IPC handler 先返回, 再销毁 sender; 退出时由 destroyAll 同步清理。
+    this.retiring.set(entry, setTimeout(() => {
+      this.retiring.delete(entry);
+      if (!window.isDestroyed()) window.destroy();
+    }, 0));
   }
 
   /** 页面状态已失效，关闭后丢弃，避免下次复用已崩溃的 React 树。 */
@@ -168,7 +193,7 @@ export class OverlayPool {
     });
     window.setAlwaysOnTop(true, 'screen-saver', 1);
     // 页面重新加载 (开发热更新、意外导航) 会丢掉会话状态: 视为这块浮层失效, 让当前会话结束,
-    // 等页面重新挂载报告 SHELL_READY 后再复用。
+    // 未使用的预热壳等页面重新挂载后继续使用, 已使用的浮层随会话结束销毁。
     window.webContents.on('did-start-loading', () => {
       entry.shellReady = false;
       this.onGone?.(entry);

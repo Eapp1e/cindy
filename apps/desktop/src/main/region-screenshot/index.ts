@@ -55,6 +55,8 @@ const CAPTURE_TIMEOUT_MS = 5000;
 /** 主窗口首帧稳定后再在后台预热浮层, 不和启动抢资源。 */
 const PREWARM_DELAY_MS = 8000;
 const DISPLAY_SETTLE_MS = 1500;
+/** 截图结束后为下一次建好新浮层; 稍等片刻, 不和复制 / 贴图等后续动作抢资源。 */
+const REPREWARM_DELAY_MS = 1000;
 
 let initialized = false;
 let registeredAccelerator: string | null = null;
@@ -104,10 +106,11 @@ export function initRegionScreenshot(): void {
 
 export function stopRegionScreenshot(): void {
   for (const dispose of disposers.splice(0)) dispose();
-  if (prewarmTimer) clearTimeout(prewarmTimer);
   if (registeredAccelerator) globalShortcut.unregister(registeredAccelerator);
   registeredAccelerator = null;
   active?.close();
+  // 会话结束会排一次预热，必须在它之后清掉。
+  if (prewarmTimer) clearTimeout(prewarmTimer);
   pool.destroyAll();
   closeAllPins();
 }
@@ -248,6 +251,7 @@ async function startRegionScreenshot(): Promise<void> {
       },
       onClosed: () => {
         if (active === session) active = null;
+        schedulePrewarm(REPREWARM_DELAY_MS);
         // export() 先结束会话再回传结果, 等这一轮同步代码走完再决定焦点去向。
         queueMicrotask(() => {
           const action = (result as RegionScreenshotResult | null)?.action ?? null;

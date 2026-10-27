@@ -277,6 +277,42 @@ describe('screenshot window lifecycle', () => {
     session.close();
   });
 
+  // 用户反馈再次截图不可见; 现有覆盖没有验证用过的透明浮层与下一次会话隔离。
+  // 最小输入：上一轮导出后立即开启下一轮, 旧窗口随后销毁。tier: unit。
+  it('retires a used overlay so the next screenshot never re-shows it', async () => {
+    let active: RegionScreenshotSession;
+    pool.setGoneHandler((overlay) => { if (active?.owns(overlay)) active.close(); });
+    const run = async () => {
+      const overlay = pool.ensure(display)!;
+      const contents = overlay.window.webContents;
+      pool.markShellReady(contents, contents.mainFrame);
+      active = new RegionScreenshotSession({ pool, captures: [{ display, image }], helper: {} as SnapshotHelper, windows: [], lastRegions: new Map(), onClosed: vi.fn(), onResult: vi.fn() });
+      await active.open();
+      active.painted(contents, contents.mainFrame, active.token);
+      return windows.find((window) => window.webContents.id === contents.id)!;
+    };
+    const first = await run();
+    const contents = first.webContents as unknown as Electron.WebContents;
+    expect(active!.export(contents, contents.mainFrame, active!.token, {
+      action: 'copy', selection: { x: 0, y: 0, width: 2, height: 2 },
+      image: { width: 4, height: 4, data: new Uint8Array(64) },
+    })).toBe(true);
+    expect(first.isVisible()).toBe(false);
+    expect(first.isDestroyed()).toBe(false);
+    expect(pool.forContents(contents)).toBeNull();
+    const second = await run();
+    expect(second).not.toBe(first);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.isDestroyed()).toBe(true);
+    expect(first.showInactive).toHaveBeenCalledTimes(1);
+    expect(active!.isClosed).toBe(false);
+    expect(second.isVisible()).toBe(true);
+    expect(pool.forContents(second.webContents as unknown as Electron.WebContents)?.window.webContents.id).toBe(second.webContents.id);
+    active!.close();
+    pool.destroyAll();
+    expect(second.isDestroyed()).toBe(true);
+  });
+
   it('prewarms without showing or transforming the macOS Dock identity, and reuses the shell', () => {
     pool.prewarm();
     pool.prewarm();
