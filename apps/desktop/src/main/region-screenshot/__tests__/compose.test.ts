@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown) => unknown>(),
   ingest: vi.fn(),
+  scope: 'owner-a:1',
+  boundary: false,
+  db: {},
   main: { isDestroyed: () => false, webContents: { mainFrame: {} } },
 }));
 vi.mock('electron', () => ({
@@ -11,6 +14,12 @@ vi.mock('electron', () => ({
   },
 }));
 vi.mock('../../cindy-media/chatAttachments', () => ({ ingestChatImageBuffer: mocks.ingest }));
+vi.mock('../../appSessionState', () => ({
+  activeOwnerScopeKey: () => mocks.scope,
+  isAppSessionBoundaryPending: () => mocks.boundary,
+  getActiveDataOwnerPushStamp: () => ({ dataOwnerId: 'owner-a', ownerGeneration: 1 }),
+}));
+vi.mock('../../localDb/client/current', () => ({ getDbClient: () => ({ drizzle: mocks.db }) }));
 vi.mock('../../deepLink', () => ({
   focusMainWindow: vi.fn(),
   sendMainWindowMessage: vi.fn(),
@@ -32,6 +41,9 @@ describe('screenshot compose delivery', () => {
   const take = () => mocks.handlers.get(C.TAKE)!(event);
   beforeEach(() => {
     vi.useFakeTimers();
+    mocks.scope = 'owner-a:1';
+    mocks.boundary = false;
+    mocks.ingest.mockClear();
     registerScreenshotComposeIpc();
     mocks.ingest.mockResolvedValue({ url: 'media:a', filename: 'a.png' });
   });
@@ -62,5 +74,24 @@ describe('screenshot compose delivery', () => {
     resolve({ url: 'media:old', filename: 'old.png' });
     await first;
     expect(take()).toMatchObject({ action: 'explain', url: 'media:a' });
+  });
+  // Unit: owner changes at ingestion or delivery must never export an old account's image.
+  it.each(['ingest', 'take', 'boundary', 'capture'] as const)('rejects stale ownership at %s', async (phase) => {
+    if (phase === 'capture') {
+      await handOffScreenshotToTask(image, 'ask', 'older-owner');
+      expect(mocks.ingest).not.toHaveBeenCalled();
+    } else if (phase === 'ingest') {
+      mocks.ingest.mockImplementationOnce(async (_params, db) => {
+        expect(db).toBe(mocks.db);
+        mocks.scope = 'owner-b:2';
+        return { url: 'media:old', filename: 'old.png' };
+      });
+      await handOffScreenshotToTask(image, 'translate');
+    } else {
+      await handOffScreenshotToTask(image, 'translate');
+      if (phase === 'take') mocks.scope = 'owner-b:2';
+      else mocks.boundary = true;
+    }
+    expect(take()).toBeNull();
   });
 });

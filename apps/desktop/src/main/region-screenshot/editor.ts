@@ -1,5 +1,6 @@
 import { app, ipcMain, nativeImage, nativeTheme, screen, type BrowserWindow, type Display, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { activeOwnerScopeKey } from '../appSessionState';
 import path from 'node:path';
 import { ResourceUsageWindowController } from '../resource-usage-window/controller';
 import { getResolvedMainLocale, t } from '../i18n';
@@ -8,6 +9,7 @@ import { REGION_SCREENSHOT_EDITOR_CHANNEL as C, isRegionScreenshotAction, valida
 import type { RegionScreenshotResult } from './session';
 
 interface EditorDocument {
+  ownerScope: string;
   payload: RegionScreenshotBegin;
   display: Display;
   selection: RegionRect;
@@ -50,13 +52,13 @@ export class ScreenshotEditor {
   prewarm(): void { this.controller.prewarm(); }
   dispose(): void { this.document = null; this.controller.dispose(); }
 
-  open(image: RegionScreenshotBitmap, display: Display, selection: RegionRect): boolean {
+  open(image: RegionScreenshotBitmap, display: Display, selection: RegionRect, ownerScope = activeOwnerScopeKey()): boolean {
     // Do not overwrite an unfinished image if another capture reaches Edit.
     if (this.document) return false;
     this.controller.prewarm();
     const window = this.window;
     if (!window || window.isDestroyed()) return false;
-    this.document = { display, selection, payload: {
+    this.document = { display, selection, ownerScope, payload: {
       token: randomUUID(), locale: getResolvedMainLocale(),
       viewport: { width: image.width, height: image.height }, scaleFactor: 1,
       frame: image, windows: [], lastRegion: selection, cursor: null,
@@ -118,7 +120,7 @@ export class ScreenshotEditor {
       const image = nativeImage.createFromBitmap(Buffer.from(bitmap.data.buffer, bitmap.data.byteOffset, bitmap.data.byteLength), { width: bitmap.width, height: bitmap.height, scaleFactor: 1 });
       if (image.isEmpty()) return false;
       this.close();
-      this.onResult({ action, image, display: doc.display, selection: doc.selection });
+      this.onResult({ action, image, display: doc.display, selection: doc.selection, ownerScope: doc.ownerScope });
       return true;
     });
   }

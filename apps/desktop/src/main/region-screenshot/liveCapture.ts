@@ -10,8 +10,9 @@ export async function captureLiveRegion(display: Display, selection: RegionRect,
   if (process.platform === 'win32' && helper) {
     const rect = screen.dipToScreenRect(null, { ...selection, x: selection.x + display.bounds.x, y: selection.y + display.bounds.y });
     const image = await helper.capture(rect, mode === 'scroll' ? 32768 : mode === 'gif' ? 960 : 1920);
-    if (!image) throw new Error('Region capture unavailable');
-    return image;
+    if (image) return image;
+    // The optional helper may have exited after an accessibility query timed out.
+    // Keep capture usable through the bounded, user-session Electron path below.
   }
   const sources = await enumerateDesktopSources(() => desktopCapturer.getSources({
     types: ['screen'],
@@ -38,13 +39,12 @@ export class RegionVideoCapture {
 
   async frame(display: Display, selection: RegionRect, mode: 'video' | 'gif'): Promise<RegionScreenshotBitmap> {
     const edge = mode === 'gif' ? 960 : 1920;
+    const generation = this.generation;
     if (process.platform === 'win32') {
-      const rect = screen.dipToScreenRect(null, { ...selection, x: selection.x + display.bounds.x, y: selection.y + display.bounds.y });
-      const result = await this.helper.capture(rect, edge);
-      if (!result) throw new Error('Region capture unavailable');
+      const result = await captureLiveRegion(display, selection, mode, this.helper);
+      if (generation !== this.generation) throw new Error('Region capture unavailable');
       return result;
     }
-    const generation = this.generation;
     if (!this.native) {
       this.native = new NativeDesktopCapture();
     }

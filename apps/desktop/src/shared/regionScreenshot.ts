@@ -185,6 +185,7 @@ export interface RegionScreenshotPinState {
 /** 截图交给新任务: 已入仓的图片与用户点的动作。 */
 export interface RegionScreenshotComposeRequest {
   id: string;
+  ownerStamp: import('./dataOwnerPush').DataOwnerPushStamp;
   action: RegionScreenshotAiAction;
   url: string;
   filename: string;

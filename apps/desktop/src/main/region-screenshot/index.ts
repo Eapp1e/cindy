@@ -12,6 +12,7 @@ import {
 } from 'electron';
 
 import { createLogger } from '../logger';
+import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState';
 import { t } from '../i18n';
 import {
   getAppShortcutStore,
@@ -219,6 +220,8 @@ function registerIpc(): void {
 }
 
 async function startRegionScreenshot(): Promise<void> {
+  if (isAppSessionBoundaryPending()) return;
+  const ownerScope = activeOwnerScopeKey();
   if (active || starting) return;
   if (pool.isDisabled) {
     void dialog.showMessageBox({ type: 'warning', message: t('regionScreenshot.captureFailed'), noLink: true });
@@ -246,6 +249,7 @@ async function startRegionScreenshot(): Promise<void> {
       snapshot.catch(() => ({ windows: [] as SnapshotWindow[], frontmostPid: null, topInsets: new Map<number, number>() })),
     ]);
     helper = await helperReady;
+    if (isAppSessionBoundaryPending() || ownerScope !== activeOwnerScopeKey()) return;
     const capturedAt = Date.now();
     if (captures.length === 0) {
       log.warn('no display could be captured');
@@ -261,12 +265,12 @@ async function startRegionScreenshot(): Promise<void> {
       windows: snap.windows,
       topInsets: snap.topInsets,
       lastRegions,
-      openEditor: (image, display, selection) => editor.open(image, display, selection),
+      openEditor: (image, display, selection) => editor.open(image, display, selection, ownerScope),
       openRecording: (bytes, format, display) => recordingPreview.open(bytes, format, display),
       onResult: (value) => {
         result = value;
         lastRegions.set(value.display.id, value.selection);
-        void runAction(value);
+        void runAction({ ...value, ownerScope });
       },
       onClosed: () => {
         if (active === session) active = null;
@@ -306,7 +310,7 @@ function takesFocus(action: RegionScreenshotAction | null): boolean {
   return action === 'save' || isRegionScreenshotAiAction(action);
 }
 
-async function runAction({ action, image, display, selection }: RegionScreenshotResult) {
+async function runAction({ action, image, display, selection, ownerScope }: RegionScreenshotResult) {
   try {
     if (action === 'copy') {
       clipboard.writeImage(image);
@@ -318,9 +322,9 @@ async function runAction({ action, image, display, selection }: RegionScreenshot
         y: Math.round(display.bounds.y + selection.y),
         width: Math.max(1, Math.round(selection.width)),
         height: Math.max(1, Math.round(selection.height)),
-      });
+      }, ownerScope);
     } else {
-      await handOffScreenshotToTask(image, action);
+      await handOffScreenshotToTask(image, action, ownerScope);
     }
   } catch (error) {
     log.warn('screenshot action failed', { action, error });

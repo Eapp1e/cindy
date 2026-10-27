@@ -4,6 +4,8 @@
  * other's insert requests.
  */
 
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, type DataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+
 const INSERT_SESSION_LINK_EVENT = 'cindy-composer-insert-session-link';
 
 /** A request to insert one conversation/message deep link into a composer. */
@@ -137,14 +139,14 @@ export interface ComposerSubmitRequest {
 }
 
 const DEFAULT_SUBMIT_TTL_MS = 15_000;
-const pendingSubmitRequests = new Map<string, ComposerSubmitRequest>();
+const pendingSubmitRequests = new Map<string, ComposerSubmitRequest & { owner: DataOwnerGeneration }>();
 const submitRequestHandlers = new Map<string, Set<() => void>>();
 
 export function requestComposerSubmit(
   request: Omit<ComposerSubmitRequest, 'expiresAt'>,
   ttlMs = DEFAULT_SUBMIT_TTL_MS,
 ): void {
-  pendingSubmitRequests.set(request.storageKey, { ...request, expiresAt: Date.now() + ttlMs });
+  pendingSubmitRequests.set(request.storageKey, { ...request, expiresAt: Date.now() + ttlMs, owner: getDataOwnerGeneration() });
   for (const handler of submitRequestHandlers.get(request.storageKey) ?? []) handler();
 }
 
@@ -152,7 +154,7 @@ export function requestComposerSubmit(
 export function peekComposerSubmitRequest(storageKey: string): ComposerSubmitRequest | null {
   const request = pendingSubmitRequests.get(storageKey);
   if (!request) return null;
-  if (request.expiresAt <= Date.now()) {
+  if (request.expiresAt <= Date.now() || !isDataOwnerGenerationCurrent(request.owner)) {
     pendingSubmitRequests.delete(storageKey);
     return null;
   }

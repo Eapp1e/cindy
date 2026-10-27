@@ -1,5 +1,7 @@
 import { ipcMain, type IpcMainInvokeEvent, type NativeImage } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { activeOwnerScopeKey, getActiveDataOwnerPushStamp, isAppSessionBoundaryPending } from '../appSessionState';
+import { getDbClient } from '../localDb/client/current';
 
 import { ingestChatImageBuffer } from '../cindy-media/chatAttachments';
 import { focusMainWindow, getDeepLinkMainWindow, sendMainWindowMessage } from '../deepLink';
@@ -23,22 +25,29 @@ const log = createLogger('region-screenshot:compose');
 
 let pending: RegionScreenshotComposeRequest | null = null;
 let pendingExpiresAt = 0;
+let pendingOwnerScope: string | null = null;
 let requestGeneration = 0;
 const REQUEST_TTL_MS = 30_000;
 
 export async function handOffScreenshotToTask(
   image: NativeImage,
   action: RegionScreenshotAiAction,
+  ownerScope = activeOwnerScopeKey(),
 ): Promise<void> {
+  if (isAppSessionBoundaryPending() || ownerScope !== activeOwnerScopeKey()) return;
+  const ownerStamp = getActiveDataOwnerPushStamp();
+  const db = getDbClient().drizzle;
   const generation = ++requestGeneration;
   const expiresAt = Date.now() + REQUEST_TTL_MS;
   pending = null;
   const png = image.toPNG();
-  const { url, filename } = await ingestChatImageBuffer({ buffer: png, mimeType: 'image/png' });
-  if (generation !== requestGeneration || Date.now() >= expiresAt) return;
+  const { url, filename } = await ingestChatImageBuffer({ buffer: png, mimeType: 'image/png' }, db);
+  if (generation !== requestGeneration || Date.now() >= expiresAt
+    || isAppSessionBoundaryPending() || ownerScope !== activeOwnerScopeKey()) return;
   const size = image.getSize();
   pending = {
     id: randomUUID(),
+    ownerStamp,
     action,
     url,
     filename,
@@ -47,6 +56,7 @@ export async function handOffScreenshotToTask(
     height: size.height,
   };
   pendingExpiresAt = expiresAt;
+  pendingOwnerScope = ownerScope;
   log.info('screenshot handed to task', { action });
   focusMainWindow();
   sendMainWindowMessage(REGION_SCREENSHOT_COMPOSE_CHANNEL.WAKE, null);
@@ -66,7 +76,8 @@ function isMainWindowEvent(event: IpcMainInvokeEvent): boolean {
 export function registerScreenshotComposeIpc(): void {
   ipcMain.handle(REGION_SCREENSHOT_COMPOSE_CHANNEL.TAKE, (event) => {
     if (!isMainWindowEvent(event)) return null;
-    const request = Date.now() < pendingExpiresAt ? pending : null;
+    const request = Date.now() < pendingExpiresAt && !isAppSessionBoundaryPending()
+      && pendingOwnerScope === activeOwnerScopeKey() ? pending : null;
     pending = null;
     return request;
   });

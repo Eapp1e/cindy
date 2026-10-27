@@ -10,6 +10,7 @@ import {
 } from 'electron';
 
 import { createLogger } from '../logger';
+import { activeOwnerScopeKey } from '../appSessionState';
 import { getResolvedMainLocale, t } from '../i18n';
 import {
   REGION_SCREENSHOT_PIN_CHANNEL as C,
@@ -33,6 +34,7 @@ const OPACITY_STEP = 0.1;
 const MAX_PINS = 32;
 
 interface Pin {
+  ownerScope: string;
   window: BrowserWindow;
   image: NativeImage;
   /** 首次显示的位置 (全局 DIP), 即截图时选区所在处。 */
@@ -70,7 +72,18 @@ function sendState(pin: Pin): void {
   if (!pin.window.isDestroyed()) pin.window.webContents.send(C.STATE, state);
 }
 
-export function openPin(image: NativeImage, bounds: Rectangle): void {
+export function openPin(image: NativeImage, bounds: Rectangle, ownerScope = activeOwnerScopeKey()): void {
+  // A stitched image can be much taller than the original selection. Fit its
+  // actual aspect ratio into the target screen, without changing the pixels.
+  const size = image.getSize();
+  const area = screen.getDisplayMatching(bounds).workArea;
+  const ratio = Math.min(bounds.width / size.width, area.width / size.width, area.height / size.height);
+  const width = Math.max(1, Math.round(size.width * ratio));
+  const height = Math.max(1, Math.round(size.height * ratio));
+  bounds = { width, height,
+    x: Math.round(Math.max(area.x, Math.min(bounds.x, area.x + area.width - width))),
+    y: Math.round(Math.max(area.y, Math.min(bounds.y, area.y + area.height - height))),
+  };
   if (pins.size >= MAX_PINS) {
     const oldest = pins.values().next().value;
     if (oldest && !oldest.window.isDestroyed()) oldest.window.close();
@@ -87,6 +100,7 @@ export function openPin(image: NativeImage, bounds: Rectangle): void {
   });
   window.setAlwaysOnTop(true, 'floating');
   const pin: Pin = {
+    ownerScope,
     window,
     image,
     initialBounds: bounds,
@@ -164,7 +178,7 @@ function runCommand(pin: Pin, command: RegionScreenshotPinCommand): void {
       void saveScreenshotImage(pin.image);
       return;
     case 'ask':
-      void handOffScreenshotToTask(pin.image, 'ask').catch((error: unknown) => {
+      void handOffScreenshotToTask(pin.image, 'ask', pin.ownerScope).catch((error: unknown) => {
         log.warn('pin hand-off failed', { error });
       });
       return;

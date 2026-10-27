@@ -17,10 +17,12 @@ import i18n from '@/i18n';
 import { requestComposerSubmit, takeComposerSubmitRequest } from '@/lib/composerActionsBus';
 import {
   getDataOwnerGeneration,
-  isDataOwnerGenerationCurrent,
+  isDataOwnerIdCurrent,
+  isDataOwnerPushStampCurrent,
 } from '@/contexts/dataOwnerGeneration';
 import {
   draftHasContent,
+  captureDraftRecoveryScope,
   getDraft,
   plainTextToTiptapDoc,
   saveDraft,
@@ -55,18 +57,18 @@ const hasAttachment = (draft: ComposerDraft | undefined, url: string) =>
 function restoreAfterSend(previous: ComposerDraft, url: string): void {
   const startedAt = Date.now();
   const owner = getDataOwnerGeneration();
+  const scope = captureDraftRecoveryScope(NEW_MAKER_DRAFT_KEY);
   let timer: ReturnType<typeof setTimeout>;
   const restore = () => {
     clearTimeout(timer);
     if (finishPendingRestore === restore) finishPendingRestore = null;
-    if (!isDataOwnerGenerationCurrent(owner)) return;
-    takeComposerSubmitRequest(NEW_MAKER_DRAFT_KEY);
-    const current = getDraft(NEW_MAKER_DRAFT_KEY);
+    if (isDataOwnerIdCurrent(owner)) takeComposerSubmitRequest(NEW_MAKER_DRAFT_KEY);
+    const current = scope.get();
     if (!draftHasContent(current)) {
-      saveDraft(NEW_MAKER_DRAFT_KEY, previous);
+      scope.save(previous);
       return;
     }
-    saveDraft(NEW_MAKER_DRAFT_KEY, {
+    scope.save({
       ...previous,
       text: {
         type: 'doc',
@@ -86,8 +88,8 @@ function restoreAfterSend(previous: ComposerDraft, url: string): void {
   };
   finishPendingRestore = restore;
   const check = () => {
-    if (!isDataOwnerGenerationCurrent(owner)) {
-      if (finishPendingRestore === restore) finishPendingRestore = null;
+    if (!isDataOwnerIdCurrent(owner)) {
+      restore();
       return;
     }
     const current = getDraft(NEW_MAKER_DRAFT_KEY);
@@ -108,6 +110,7 @@ export function applyScreenshotComposeRequest(
   request: RegionScreenshotComposeRequest,
   navigate: (path: string) => void,
 ): void {
+  if (!isDataOwnerPushStampCurrent(request.ownerStamp)) return;
   // 先收回上一轮保管的草稿，再开始下一轮；旧 timer 不能把原稿遗失或覆盖新稿。
   finishPendingRestore?.();
   takeComposerSubmitRequest(NEW_MAKER_DRAFT_KEY);

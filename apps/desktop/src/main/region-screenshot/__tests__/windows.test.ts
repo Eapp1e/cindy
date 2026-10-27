@@ -55,6 +55,7 @@ vi.mock('electron', () => ({
   Menu: { buildFromTemplate: vi.fn() },
   ipcMain: { on: (name: string, fn: (...args: unknown[]) => unknown) => mocks.handlers.set(name, fn), handle: (name: string, fn: (...args: unknown[]) => unknown) => mocks.handlers.set(name, fn) },
 }));
+vi.mock('../../appSessionState', () => ({ activeOwnerScopeKey: () => 'owner-a:1' }));
 vi.mock('../pageWindow', () => ({ createScreenshotPageWindow: mocks.create }));
 vi.mock('../compose', () => ({ handOffScreenshotToTask: vi.fn() }));
 vi.mock('../save', () => ({ saveScreenshotImage: vi.fn(), saveRegionRecording: mocks.saveRecording }));
@@ -712,6 +713,28 @@ describe('screenshot window lifecycle', () => {
     expect(window.isVisible()).toBe(false);
     mocks.handlers.get(P.PAINTED)!(event);
     expect(window.isVisible()).toBe(true);
+  });
+
+  // Unit: the editor retains the original selection, but a stitched bitmap must
+  // keep its aspect ratio and fit the monitor instead of using that selection's height.
+  it('pins a tall bitmap at its own aspect ratio without altering its pixels', () => {
+    const screenSpy = vi.spyOn(mocks.screen, 'getDisplayMatching').mockReturnValue({
+      workArea: { x: -800, y: 0, width: 800, height: 600 },
+    });
+    try {
+      registerPinIpc();
+      const pixels = Buffer.alloc(200 * 800 * 4);
+      openPin({ getSize: () => ({ width: 200, height: 800 }), toBitmap: () => pixels } as NativeImage,
+        { x: -200, y: 400, width: 200, height: 100 });
+      const window = windows.at(-1)!;
+      const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
+      mocks.handlers.get(P.SHELL_READY)!(event);
+      const init = window.webContents.send.mock.calls.find(([name]) => name === P.INIT)![1];
+      expect({ width: init.image.width, height: init.image.height, bytes: init.image.data.byteLength })
+        .toEqual({ width: 200, height: 800, bytes: pixels.byteLength });
+      mocks.handlers.get(P.PAINTED)!(event);
+      expect(window.setBounds).toHaveBeenCalledWith({ x: -200, y: 0, width: 150, height: 600 }, false);
+    } finally { screenSpy.mockRestore(); }
   });
 
   it('destroys a pin that never paints instead of showing a black window', async () => {

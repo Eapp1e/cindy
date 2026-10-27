@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from 'vitest';
+import { getDataOwnerGeneration, setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 
 import {
   insertSessionLinkIntoComposer,
@@ -12,6 +13,17 @@ import {
 } from '@/lib/composerActionsBus';
 
 describe('composerActionsBus', () => {
+  // Unit: queued screenshot sends must not survive an account/runtime boundary.
+  it.each(['same-owner', 'other-owner'])('drops queued submission after %s changes generation', change => {
+    const previous = getDataOwnerGeneration();
+    try {
+      setDataOwnerGeneration('owner-a', 1);
+      requestComposerSubmit({ storageKey: 'owner-draft', attachmentUrl: 'image:private' });
+      setDataOwnerGeneration(change === 'same-owner' ? 'owner-a' : 'owner-b', 2);
+      expect(peekComposerSubmitRequest('owner-draft')).toBeNull();
+      expect(takeComposerSubmitRequest('owner-draft')).toBeNull();
+    } finally { setDataOwnerGeneration(previous.dataOwnerId, previous.generation); }
+  });
   it('delivers session-link insert requests and supports unsubscribe', () => {
     const handler = vi.fn();
     const unsubscribe = subscribeSessionLinkInsert(handler);

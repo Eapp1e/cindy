@@ -46,6 +46,7 @@ export interface DisplayCapture {
 }
 
 export interface RegionScreenshotResult {
+  ownerScope?: string;
   action: RegionScreenshotAction;
   image: NativeImage;
   display: Display;
