@@ -12,8 +12,9 @@ the repository's actual `stargazers_count`, including decreases.
 
 ## Updating
 
-The `README star history` workflow runs daily at 01:23 UTC (09:23 Shanghai),
-manually, and when its generator/seed/workflow changes on main. GitHub may delay
+The `README star history` workflow runs every six hours at 01:23, 07:23, 13:23,
+and 19:23 UTC (03:23, 09:23, 15:23, and 21:23 Shanghai), manually, and when its
+generator/seed/workflow changes on main. GitHub may delay
 scheduled runs; image caching can also delay their appearance. The schedule
 becomes active after merge. The workflow needs only the built-in `GITHUB_TOKEN`
 with `contents: write`; it runs only in `makecindy/cindy`, not forks.
@@ -21,6 +22,7 @@ with `contents: write`; it runs only in `makecindy/cindy`, not forks.
 The generator reads the previous `history.json` from the dedicated
 `readme-star-history` branch, replaces today's UTC observation or appends a new
 day, and publishes the five generated files together in one non-force commit.
+Each UTC day keeps one point; subsequent refreshes update that day's count.
 It never commits to main. An API error, invalid count, or concurrent publication
 fails the run and leaves the last published branch intact. Missing days are
 connected by the line, not filled with invented observations. The branch is
@@ -40,8 +42,8 @@ node scripts/update-star-history.mjs --refresh --publish --output /tmp/cindy-sta
 ```
 
 The SVGs beside this document are the reviewable initial snapshot. README
-`picture` sources load the daily assets; renderers without picture support use
-the checked-in light SVG. A browser will not use that fallback on a network
+`picture` sources load the regularly refreshed assets; renderers without picture
+support use the checked-in light SVG. A browser will not use that fallback on a network
 error. Regenerate snapshots when changing the design.
 Disable the workflow to stop updates while retaining the last chart. To undo the
 feature, remove the two README additions; no client behavior or data is affected.
