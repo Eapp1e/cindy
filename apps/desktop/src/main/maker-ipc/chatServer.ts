@@ -668,7 +668,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       throw error;
     });
   }
-  const media = createChatMedia(api, current, deps.log, { allowLoopback: !app.isPackaged && process.env.XDT_ISOLATED === '1' && config.baseUrl === 'http://127.0.0.1:3018' });
+  const media = createChatMedia(api, current, config.baseUrl, deps.log, { allowLoopback: !app.isPackaged && process.env.XDT_ISOLATED === '1' && config.baseUrl === 'http://127.0.0.1:3018' });
   const threads = createThreadProjection<Message>({
     threadPage: (roomId, rootId, limit, before) => history()?.page<Message>(roomId,
       new URLSearchParams({ threadRootId: rootId, limit: String(limit), ...(before ? { before } : {}) }))
@@ -1338,6 +1338,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // Until the bytes are here the view keeps a named placeholder in its place, so
   // a slow or failed download is shown as such instead of disappearing.
   const downloads = new Map<string, { value?: BotGroupAttachment; retryAt: number }>();
+  let downloadGeneration = media.cacheGeneration;
   // A page's attachments settle close together; one re-read of the room and sidebar shows
   // them all instead of one full re-read per file.
   const attachmentRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1349,6 +1350,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }, ATTACHMENT_REFRESH_COALESCE_MS));
   }
   async function messageViews(roomId: string, messages: Message[], members: Member[], ownerMembers: readonly Member[] = members) {
+    if (downloadGeneration !== media.cacheGeneration) {
+      downloads.clear();
+      downloadGeneration = media.cacheGeneration;
+    }
     return messages.map(message => {
       const view = messageView(message, members, ownerMembers);
       for (const block of message.content) if (!message.deleted && block.type === 'media' && block.mediaId) {

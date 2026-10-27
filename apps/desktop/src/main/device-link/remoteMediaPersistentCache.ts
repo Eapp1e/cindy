@@ -14,6 +14,9 @@ let cacheGeneration = 0;
 export function invalidateRemoteMediaPersistentWrites(): void {
   cacheGeneration++;
 }
+export function remoteMediaCacheGeneration(): number {
+  return cacheGeneration;
+}
 
 export function captureRemoteMediaOwner(): () => void {
   const owner = captureDataOwnerBroadcastScope();
@@ -79,12 +82,25 @@ export function createSentImageRetainer(device: string) {
  * Capture the database and owner before downloading so late work cannot enter a new account. */
 export function remoteMediaPersistentCache(device: string, url: string) {
   if (!isImmutableRemoteMedia(url)) return null;
+  return persistentImageCache([device, url], url.startsWith('cindy-media://')
+    ? url.split('/').pop()!.split('.')[0] : undefined);
+}
+
+/** Chat Server media IDs are immutable, but their signed download URLs expire.
+ * Keep their index separate from device URLs, with the same manual cleanup lifecycle.
+ * The caller must authorize the room/media before using a hit. */
+export function chatMediaPersistentCache(endpoint: string, roomId: string, mediaId: string, assertValid: () => void) {
+  return persistentImageCache(['chat-server', endpoint, roomId, mediaId], undefined, assertValid);
+}
+
+function persistentImageCache(identity: string[], expectedHash?: string, assertValid?: () => void) {
   const session = getActiveAppSession();
   if (!session.dataOwnerId) return null;
-  const assertCurrent = captureRemoteMediaCacheValidity();
+  const assertCache = captureRemoteMediaCacheValidity();
+  const assertCurrent = () => { assertValid?.(); assertCache(); };
   const db = getDbClient().drizzle;
   const key = `${REMOTE_MEDIA_INTEGRATION}:${createHash('sha256')
-    .update(JSON.stringify([session.mode, session.dataOwnerId, device, url]))
+    .update(JSON.stringify([session.mode, session.dataOwnerId, ...identity]))
     .digest('hex')}`;
   return {
     async get(maxBytes: number) {
@@ -92,10 +108,12 @@ export function remoteMediaPersistentCache(device: string, url: string) {
       const hit = await integrationCacheGet(key, db);
       assertCurrent();
       if (!hit || !hit.mimeType.startsWith('image/')) return null;
-      const file = await fs.open(hit.absPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      const file = await fs.open(hit.absPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)).catch(() => null);
+      if (!file) { assertCurrent(); return null; }
       try {
+        assertCurrent();
         const stat = await file.stat();
-        if (!stat.isFile() || stat.size > maxBytes) return null;
+        if (!stat.isFile() || stat.size <= 0 || stat.size > maxBytes) return null;
         const bytes = Buffer.alloc(stat.size);
         let offset = 0;
         while (offset < bytes.length) {
@@ -110,7 +128,7 @@ export function remoteMediaPersistentCache(device: string, url: string) {
           createHash('sha256').update(bytes).digest('hex') !== hit.hash
         )
           return null;
-        return { bytes, mimeType: hit.mimeType };
+        return { bytes, mimeType: hit.mimeType, url: hit.url };
       } finally {
         await file.close();
       }
@@ -121,11 +139,10 @@ export function remoteMediaPersistentCache(device: string, url: string) {
       if (!verified?.startsWith('image/')) return;
       // Never attach bytes to a remote content hash that they do not actually match.
       if (
-        url.startsWith('cindy-media://') &&
-        createHash('sha256').update(bytes).digest('hex') !== url.split('/').pop()!.split('.')[0]
+        expectedHash && createHash('sha256').update(bytes).digest('hex') !== expectedHash
       )
         return;
-      await integrationCachePut(
+      return integrationCachePut(
         {
           cacheKey: key,
           integration: REMOTE_MEDIA_INTEGRATION,

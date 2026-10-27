@@ -636,7 +636,11 @@ export async function listCacheBlobsByLru(db: LedgerDb = defaultDb(), integratio
       SELECT 1 FROM ${mediaRefs} WHERE ${mediaRefs.hash} = ${mediaBlobs.hash}
       AND ${mediaRefs.refKind} = 'integration-cache' AND ${mediaRefs.originId} = ${integration}
     ) AND NOT EXISTS (SELECT 1 FROM ${mediaRefs} WHERE ${mediaRefs.hash} = ${mediaBlobs.hash}
-      AND (${mediaRefs.refKind} <> 'integration-cache' OR ${mediaRefs.originId} IS NULL OR ${mediaRefs.originId} <> ${integration}))` : undefined))
+      AND (${mediaRefs.refKind} <> 'integration-cache' OR ${mediaRefs.originId} IS NULL OR ${mediaRefs.originId} <> ${integration}))`
+      // Long-lived chat image copies have their own explicit cleanup category.
+      // Shared bytes stay protected even when an ordinary cache also references them.
+      : sql`NOT EXISTS (SELECT 1 FROM ${mediaRefs} WHERE ${mediaRefs.hash} = ${mediaBlobs.hash}
+        AND ${mediaRefs.refKind} = 'integration-cache' AND ${mediaRefs.originId} = 'remote-media')`))
     .orderBy(asc(mediaBlobs.lastAccessAt))
     .all();
 }
@@ -685,7 +689,9 @@ export async function deleteCacheBlobRecord(
         eq(mediaBlobs.isCache, true),
         sql`NOT EXISTS (SELECT 1 FROM ${mediaRefs} WHERE ${mediaRefs.hash} = ${mediaBlobs.hash} AND ${mediaRefs.refKind} <> 'integration-cache')`,
         integration ? sql`NOT EXISTS (SELECT 1 FROM ${mediaRefs} WHERE ${mediaRefs.hash} = ${mediaBlobs.hash}
-          AND (${mediaRefs.originId} IS NULL OR ${mediaRefs.originId} <> ${integration}))` : undefined,
+          AND (${mediaRefs.originId} IS NULL OR ${mediaRefs.originId} <> ${integration}))`
+          : sql`NOT EXISTS (SELECT 1 FROM ${mediaRefs} WHERE ${mediaRefs.hash} = ${mediaBlobs.hash}
+            AND ${mediaRefs.refKind} = 'integration-cache' AND ${mediaRefs.originId} = 'remote-media')`,
         integration ? sql`EXISTS (SELECT 1 FROM ${mediaRefs} WHERE ${mediaRefs.hash} = ${mediaBlobs.hash}
           AND ${mediaRefs.originId} = ${integration})` : undefined,
       ),
