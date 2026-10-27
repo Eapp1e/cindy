@@ -223,6 +223,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const inFlightRef = useRef(false);
   const queuedRef = useRef(false);
   const queuedSourcesRef = useRef(new Set<string>());
+  const changedRepliesRef = useRef(new Set<string>());
 
   /** Lowest sequence of the last latest-page read; replies below it live only on opened older pages. */
   const latestFloorRef = useRef(Number.POSITIVE_INFINITY);
@@ -245,6 +246,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const clearHistory = useCallback(() => {
     historyEpochRef.current++;
     queuedSourcesRef.current.clear();
+    changedRepliesRef.current.clear();
     for (const key of windows().keys()) if (key.startsWith(`${group.id}:`)) windows().delete(key);
     repliesRef.current = [];
     setReplies([]); setRoot(null); setExecutionFailures([]); setHasMore(false);
@@ -266,6 +268,8 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     // so the coalesced refresh also validates their execution state.
     const extraSources = before ? [] : [...queuedSourcesRef.current];
     if (!before) queuedSourcesRef.current.clear();
+    const changedReplies = before ? [] : [...changedRepliesRef.current];
+    if (!before) changedRepliesRef.current.clear();
     // An older page belongs below the reply it was read from; a latest page that started over
     // meanwhile dropped that reply, and the page would sit under the new one with the gap still in it.
     const anchorId = before ? shown[0]?.id : undefined;
@@ -329,6 +333,17 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       if (addedSources.size) {
         for (const id of addedSources) queuedSourcesRef.current.add(id);
         refreshRef.current();
+      }
+      // Recheck local reactions after the latest page settles, inside the same
+      // coalesced refresh. Otherwise that refresh can invalidate this recheck.
+      // A durable projection already returns the changed reply in messageUpdates.
+      if (!before && !gap && !reset) {
+        const refreshedIds = new Set([...result.replies, ...(result.messageUpdates ?? [])].map(reply => reply.id));
+        for (const reply of shown) {
+          if (!changedReplies.includes(reply.id) || refreshedIds.has(reply.id)) continue;
+          if (!current()) return;
+          await readRef.current(reply.sequence + 1, true);
+        }
       }
       // A refresh reads only the latest page: replies on opened older pages keep the attachments they
       // arrived with, so re-read the pages whose attachments were not here yet.
@@ -434,9 +449,9 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   // The root and the latest page come with every refresh; a reply opened through 「加载更早」 sits
   // below that page, so the page holding it is re-read for its new reaction state.
   const onChanged = useCallback((messageId: string) => {
-    refreshRef.current();
     const reply = repliesRef.current.find(candidate => candidate.id === messageId);
-    if (reply && reply.sequence < latestFloorRef.current) void readRef.current(reply.sequence + 1, true);
+    if (reply && reply.sequence < latestFloorRef.current) changedRepliesRef.current.add(messageId);
+    refreshRef.current();
   }, []);
   const onSendStart = useCallback((message: BotGroupOutgoingMessage) => {
     stickToBottomRef.current = true;

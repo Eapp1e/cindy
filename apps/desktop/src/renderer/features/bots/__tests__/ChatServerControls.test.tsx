@@ -476,14 +476,17 @@ describe('chat interaction controls', () => {
     expect(mocks.react).toHaveBeenCalledWith({ groupId: 'room', messageId: 'root', emoji: '👍', present: false });
   });
 
-  it('re-reads the opened older Thread page after reacting to a reply on it', async () => {
+  // Unit, PR #7396: a latest refresh must not invalidate the reaction recheck for
+  // an opened older reply. The projection path must avoid that extra page read.
+  it.each([false, true])('refreshes an opened older Thread reaction (projection: %s)', async projection => {
     const latest = { ...message, id: 'latest', sequence: 100, content: 'Latest reply', reactions: [] };
     const older = { ...message, id: 'older', sequence: 4, content: 'Earlier reply', reactions: [{ emoji: '👍', count: 1, me: false }] };
+    const updated = { ...older, reactions: [{ emoji: '👍', count: 2, me: true }] };
     let reacted = false;
     mocks.thread.mockImplementation(async (input: { before?: number }) => input.before
       // The re-read page's hasMore is not about the oldest loaded page, so it must be ignored.
-      ? { ok: true, root: message, replies: [reacted ? { ...older, reactions: [{ emoji: '👍', count: 2, me: true }] } : older], hasMore: input.before === 5 }
-      : { ok: true, root: message, replies: [latest], hasMore: true });
+      ? { ok: true, root: message, replies: [reacted ? updated : older], hasMore: input.before === 5 }
+      : { ok: true, root: message, replies: [latest], hasMore: true, ...(projection && reacted ? { messageUpdates: [updated] } : {}) });
     mocks.react.mockImplementation(async () => { reacted = true; return { ok: true }; });
     render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
     fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
@@ -498,7 +501,8 @@ describe('chat interaction controls', () => {
     // from avatar placeholders back to the authoritative count.
     await waitFor(() => expect(earlierChip().textContent).toContain('2'));
     expect(mocks.react).toHaveBeenCalledWith({ groupId: 'room', messageId: 'older', emoji: '👍', present: true });
-    expect(mocks.thread.mock.calls.map(([input]) => input.before)).toEqual([undefined, 100, undefined, 5]);
+    expect(mocks.thread.mock.calls.map(([input]) => input.before)).toEqual(projection
+      ? [undefined, 100, undefined] : [undefined, 100, undefined, 5]);
     expect(screen.queryByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' })).toBeNull();
     expect(screen.getByText('Latest reply')).toBeTruthy();
   });
