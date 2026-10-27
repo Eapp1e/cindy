@@ -1,9 +1,10 @@
 import { EventEmitter } from 'node:events';
-import type { Display, NativeImage } from 'electron';
+import type { BrowserWindow, Display, NativeImage } from 'electron';
 import type { SnapshotHelper } from '../snapshotHost';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  switches: new Set<string>(),
   create: vi.fn(),
   screen: new (class {
     on = vi.fn();
@@ -20,7 +21,14 @@ const mocks = vi.hoisted(() => ({
   saveRecording: vi.fn(async () => true),
 }));
 vi.mock('electron', () => ({
-  app: { focus: vi.fn() },
+  app: {
+    focus: vi.fn(),
+    commandLine: {
+      hasSwitch: (flag: string) => mocks.switches.has(flag),
+      appendSwitch: (flag: string) => { mocks.switches.add(flag); },
+      removeSwitch: (flag: string) => { mocks.switches.delete(flag); },
+    },
+  },
   clipboard: { writeImage: vi.fn(), writeText: vi.fn() },
   screen: mocks.screen,
   globalShortcut: { register: mocks.register, unregister: mocks.unregister },
@@ -47,7 +55,7 @@ vi.mock('../save', () => ({ saveScreenshotImage: vi.fn(), saveRegionRecording: m
 vi.mock('../liveCapture', () => ({ captureLiveRegion: mocks.liveCapture, RegionVideoCapture: class { frame = mocks.liveCapture; stop() {} } }));
 vi.mock('../../i18n', () => ({ getResolvedMainLocale: () => 'en', t: (key: string) => key }));
 vi.mock('../../logger', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn() }) }));
-import { OverlayPool } from '../overlays';
+import { OverlayPool, showScreenshotOverlay } from '../overlays';
 import { RegionScreenshotSession } from '../session';
 import { acquireOverlayEscape } from '../../overlayEscape';
 import { closeAllPins, openPin, registerPinIpc } from '../pins';
@@ -108,6 +116,7 @@ describe('screenshot window lifecycle', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    mocks.switches.clear();
     windows = [];
     mocks.create.mockImplementation(() => {
       const window = fakeWindow();
@@ -121,6 +130,31 @@ describe('screenshot window lifecycle', () => {
     pool.destroyAll();
     closeAllPins();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  // 用户反馈：打开截图时整屏缩放。实机验证 Aura 动画；unit 保护临时开关
+  // 不泄漏到其它窗口、不清除用户启动参数，且异常也恢复。tier: unit。
+  it.each([
+    ['win32', false, false],
+    ['win32', false, true],
+    ['win32', true, false],
+    ['darwin', false, false],
+  ] as const)('scopes screenshot animations on %s (existing=%s, throws=%s)', (platform, existing, throws) => {
+    vi.stubGlobal('process', Object.create(process, { platform: { value: platform } }));
+    const flag = 'wm-window-animations-disabled';
+    if (existing) mocks.switches.add(flag);
+    let disabledDuringShow: boolean | undefined;
+    const window = {
+      showInactive: () => {
+        disabledDuringShow = mocks.switches.has(flag);
+        if (throws) throw new Error('window destroyed');
+      },
+    } as BrowserWindow;
+    if (throws) expect(() => showScreenshotOverlay(window)).toThrow('window destroyed');
+    else showScreenshotOverlay(window);
+    expect(disabledDuringShow).toBe(platform === 'win32');
+    expect(mocks.switches.has(flag)).toBe(existing);
   });
 
   // Phase 5/6: same trusted sender/token contract now guards continuing capture and clip export.

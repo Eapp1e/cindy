@@ -28,7 +28,7 @@ import {
   type RegionScreenshotBegin,
   type RegionScreenshotWindow,
 } from '../../shared/regionScreenshot';
-import type { OverlayPool, OverlayWindow } from './overlays';
+import { showScreenshotOverlay, type OverlayPool, type OverlayWindow } from './overlays';
 import type { SnapshotHelper, SnapshotWindow } from './snapshotHost';
 
 const log = createLogger('region-screenshot:session');
@@ -140,7 +140,7 @@ export class RegionScreenshotSession {
       const { window } = overlay;
       window.setOpacity(0);
       window.setBounds(capture.display.bounds, false);
-      window.showInactive();
+      showScreenshotOverlay(window);
       // 混合 DPI 下首次定位可能按错误的缩放落位, 显示后按显示器 bounds 再校正一次。
       window.setBounds(capture.display.bounds, false);
     }
@@ -400,7 +400,7 @@ export class RegionScreenshotSession {
     member.painted = false;
     member.overlay.window.setOpacity(0);
     member.overlay.window.setBounds(member.capture.display.bounds, false);
-    member.overlay.window.showInactive();
+    showScreenshotOverlay(member.overlay.window);
     // The existing editor must paint before the full-size overlay is revealed again.
     this.revealTimer = setTimeout(() => { if (!member.painted) this.close(); }, REVEAL_FALLBACK_MS);
     return true;

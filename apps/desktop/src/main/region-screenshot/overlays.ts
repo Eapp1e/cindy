@@ -1,4 +1,4 @@
-import { screen, type BrowserWindow, type Display, type WebContents } from 'electron';
+import { app, screen, type BrowserWindow, type Display, type WebContents } from 'electron';
 
 import { createLogger } from '../logger';
 import { createScreenshotPageWindow } from './pageWindow';
@@ -10,6 +10,22 @@ const SHELL_TIMEOUT_MS = 4000;
 /** 浮层 renderer 崩溃后的重建额度: 10 分钟内最多 3 次, 超出后本次运行不再截图。 */
 const CRASH_LIMIT = 3;
 const CRASH_WINDOW_MS = 10 * 60_000;
+
+/** Chromium Aura 的显示动画会缩放整个截图，DWM / thickFrame 开关无法禁用它。 */
+export function showScreenshotOverlay(window: BrowserWindow): void {
+  const flag = 'wm-window-animations-disabled';
+  if (process.platform !== 'win32' || app.commandLine.hasSwitch(flag)) {
+    window.showInactive();
+    return;
+  }
+  // Aura 在同步 show 调用中读取此开关；立即恢复，不能改变其它窗口的动画策略。
+  app.commandLine.appendSwitch(flag);
+  try {
+    window.showInactive();
+  } finally {
+    app.commandLine.removeSwitch(flag);
+  }
+}
 
 export interface OverlayWindow {
   readonly window: BrowserWindow;
