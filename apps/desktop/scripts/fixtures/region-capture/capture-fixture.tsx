@@ -36,7 +36,7 @@ function ScrollFixture({ bridge, locale }: { bridge: RegionScreenshotOverlayBrid
     let begin: Parameters<RegionScreenshotOverlayBridge['onBegin']>[0] | undefined;
     return { ...bridge,
       onBegin: (callback: typeof begin) => { begin = callback; return () => { begin = undefined; }; },
-      shellReady: () => { if (image) queueMicrotask(() => begin?.({ token: 'editor', locale, viewport: image, frame: image, scaleFactor: 1, windows: [], cursor: null, lastRegion: { x: 100, y: 100, width: 480, height: 240 } })); },
+      shellReady: () => { if (image) queueMicrotask(() => begin?.({ token: 'editor', locale, viewport: image, frame: image, scaleFactor: 1, windows: [], cursor: null, lastRegion: { x: 100, y: 100, width: 480, height: 240 }, safeArea: { x: 0, y: 0, width: image.width, height: image.height } })); },
     };
   }, [bridge, image, locale]);
   if (clip) return <RecordingPreview document={clip} bridge={{
@@ -56,7 +56,7 @@ mountPage({
     let selected = { x: 100, y: 100, width: 480, height: 240 };
     const bridge: RegionScreenshotOverlayBridge = {
       autoScroll: async (_token, enabled) => { qa.automatic = enabled; return true; },
-      shellReady() { queueMicrotask(() => begin?.({ token: 'fixture', locale: ctx.locale, viewport: { width: innerWidth, height: innerHeight }, scaleFactor: 1, frame: frame(), windows: [], lastRegion: null, cursor: ctx.case === 'inactive' ? null : { x: 0, y: 0 } })); },
+      shellReady() { queueMicrotask(() => begin?.({ token: 'fixture', locale: ctx.locale, viewport: { width: innerWidth, height: innerHeight }, scaleFactor: 1, frame: frame(), windows: [], lastRegion: null, cursor: ctx.case === 'inactive' ? null : { x: 0, y: 0 }, safeArea: { x: 0, y: 0, width: innerWidth, height: innerHeight } })); },
       onBegin: (callback) => { begin = callback; return () => { begin = undefined; }; }, onEnd: () => () => {}, onClear: () => () => {},
       painted() {}, focused() {}, selectionStarted() {}, copyText() {}, cancel() {}, abandon() {},
       elementsAt: async () => [], startLive: async (_token, captureMode, selection) => { selected = selection; return { mode: captureMode, selection, first: frame(qa.manualScroll ?? 0), scrollLayout: scrollCaptureLayout(selection, { width: innerWidth, height: innerHeight })!, recordingLayout: { viewport: { width: innerWidth, height: innerHeight }, controls: recordingControlsBounds(selection, { width: innerWidth, height: innerHeight }, false)! } }; },

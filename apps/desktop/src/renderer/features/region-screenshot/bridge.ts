@@ -13,7 +13,8 @@ import type { RegionCaptureBegin, RegionCaptureFrame, RegionCaptureMode } from '
 export interface RegionScreenshotOverlayBridge {
   recordingControls(token: string, expanded: boolean, point?: { x: number; y: number }, dragging?: boolean): Promise<RegionRect | null>;
   previewRecording(token: string, bytes: Uint8Array, format: 'webm' | 'gif'): Promise<boolean>;
-  autoScroll(token: string, enabled: boolean): Promise<boolean>;
+  /** `'accessibility'`: macOS 缺少辅助功能权限, 系统已弹出授权询问。 */
+  autoScroll(token: string, enabled: boolean): Promise<boolean | 'accessibility'>;
   restoreEditor(token: string, image: RegionScreenshotBitmap): Promise<boolean>;
   holdCapture(token: string): Promise<void>;
   startLive(token: string, mode: RegionCaptureMode, selection: RegionRect): Promise<RegionCaptureBegin | null>;

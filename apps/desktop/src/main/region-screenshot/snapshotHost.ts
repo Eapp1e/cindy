@@ -252,6 +252,18 @@ export class SnapshotHelper {
     return response.keys.filter((value): value is string => typeof value === 'string' && value.length <= 16).slice(0, 8);
   }
 
+  /** macOS: 每块显示器 (按 Display.id) 顶部被摄像头刘海占用的高度 (DIP)。 */
+  async screenInsets(): Promise<Map<number, number>> {
+    const insets = new Map<number, number>();
+    if (process.platform !== 'darwin') return insets;
+    const response = await this.request({ op: 'screens' });
+    for (const raw of Array.isArray(response?.screens) ? response.screens : []) {
+      const { id, top } = (raw ?? {}) as Record<string, unknown>;
+      if (Number.isInteger(id) && typeof top === 'number' && top >= 0 && top < 200) insets.set(id as number, top);
+    }
+    return insets;
+  }
+
   /** Windows capture in the current user session; no elevated desktop broker. */
   async capture(rect: RegionRect, edge: number): Promise<RegionScreenshotBitmap | null> {
     const response = await this.request({ op: 'frame', ...rect, edge }, 1500);

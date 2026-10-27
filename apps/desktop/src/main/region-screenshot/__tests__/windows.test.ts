@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   switches: new Set<string>(),
   create: vi.fn(),
+  focus: vi.fn(),
   screen: new (class {
     on = vi.fn();
     removeListener = vi.fn();
@@ -25,7 +26,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('electron', () => ({
   app: {
-    focus: vi.fn(),
+    focus: mocks.focus,
     commandLine: {
       hasSwitch: (flag: string) => mocks.switches.has(flag),
       appendSwitch: (flag: string) => { mocks.switches.add(flag); },
@@ -36,6 +37,7 @@ vi.mock('electron', () => ({
   screen: mocks.screen,
   nativeTheme: { shouldUseDarkColors: false },
   globalShortcut: { register: mocks.register, unregister: mocks.unregister },
+  systemPreferences: { isTrustedAccessibilityClient: () => true },
   nativeImage: {
     createFromBitmap: (
       data: Buffer,
@@ -173,6 +175,32 @@ describe('screenshot window lifecycle', () => {
     }
   });
 
+  // User report (macOS): the mode bar sat under the notch and live controls over the Dock.
+  // The page only learns its chrome area from BEGIN; recording controls are placed in main.
+  // Minimal input: a work area without menu bar / Dock plus a 32pt notch. tier: unit.
+  it('gives macOS overlays a notch- and Dock-free chrome area for the toolbar and live controls', async () => {
+    vi.stubGlobal('process', Object.create(process, { platform: { value: 'darwin' } }));
+    const notched = { ...display, bounds: { x: 0, y: 0, width: 1470, height: 956 }, workArea: { x: 0, y: 24, width: 1470, height: 862 }, scaleFactor: 1 } as Display;
+    mocks.screen.getAllDisplays.mockReturnValue([notched]);
+    const overlay = pool.ensure(notched)!;
+    const owner = overlay.window.webContents;
+    pool.markShellReady(owner, owner.mainFrame);
+    const cropped = { getSize: () => ({ width: 400, height: 300 }), toBitmap: () => Buffer.alloc(400 * 300 * 4), resize: () => cropped };
+    const source = { getSize: () => ({ width: 1470, height: 956 }), toBitmap: () => Buffer.alloc(1470 * 956 * 4), crop: () => cropped } as unknown as NativeImage;
+    const helper = {} as SnapshotHelper;
+    const session = new RegionScreenshotSession({ pool, captures: [{ display: notched, image: source }], helper, windows: [], lastRegions: new Map(), topInsets: new Map([[notched.id, 32]]), onClosed: vi.fn(), onResult: vi.fn() });
+    await session.open();
+    const begin = vi.mocked(owner.send).mock.calls.find(([name]) => name === 'region-screenshot:begin')![1];
+    expect(begin.safeArea).toEqual({ x: 0, y: 32, width: 1470, height: 854 });
+    session.painted(owner, owner.mainFrame, session.token);
+    const selected = { x: 200, y: 300, width: 700, height: 530 };
+    const live = session.startLive(owner, owner.mainFrame, session.token, 'video', selected)!;
+    const controls = live.recordingLayout!.controls;
+    expect(controls.y).toBeGreaterThanOrEqual(32);
+    expect(controls.y + controls.height).toBeLessThanOrEqual(886);
+    session.close();
+  });
+
   // Phase 5/6: same trusted sender/token contract now guards continuing capture and clip export.
   // Existing static-image tests cannot observe a late frame after cancellation or native-dialog retry.
   // Minimal input: one live request, close before the capture promise resolves. tier: unit.
@@ -282,6 +310,34 @@ describe('screenshot window lifecycle', () => {
     expect(windows[0].setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
   });
 
+  // 用户反馈开始录制时整屏抖动。Electron macOS 的 blur 会 orderOut 再 orderBack，
+  // 现有首帧测试未覆盖开始采集时的层级切换。最小输入：已显示的面板开始采集。
+  // tier: unit；内存窗口模拟原生 blur 的显隐，不能让采集开始重排正在显示的面板。
+  it.each(['video', 'gif', 'scroll'] as const)('keeps the macOS capture panel continuously visible when starting %s', async (mode) => {
+    vi.stubGlobal('process', Object.create(process, { platform: { value: 'darwin' } }));
+    const largeDisplay = { ...display, bounds: { x: 0, y: 0, width: 1280, height: 900 }, scaleFactor: 1 };
+    mocks.screen.getAllDisplays.mockReturnValue([largeDisplay]);
+    const overlay = pool.ensure(largeDisplay)!;
+    const owner = overlay.window.webContents;
+    pool.markShellReady(owner, owner.mainFrame);
+    const crop = { getSize: () => ({ width: 400, height: 300 }), toBitmap: () => Buffer.alloc(400 * 300 * 4), resize: () => crop };
+    const source = { getSize: () => ({ width: 1280, height: 900 }), toBitmap: () => Buffer.alloc(1280 * 900 * 4), crop: () => crop } as unknown as NativeImage;
+    const session = new RegionScreenshotSession({ pool, captures: [{ display: largeDisplay, image: source }], helper: {} as SnapshotHelper, windows: [], lastRegions: new Map(), onClosed: vi.fn(), onResult: vi.fn() });
+    try {
+      await session.open();
+      session.painted(owner, owner.mainFrame, session.token);
+      const win = windows[0], visibility: string[] = [];
+      win.on('hide', () => visibility.push('hide'));
+      win.on('show', () => visibility.push('show'));
+      win.blur.mockImplementation(() => { win.hide(); win.showInactive(); });
+      win.setBounds.mockClear();
+      expect(session.startLive(owner, owner.mainFrame, session.token, mode, { x: 100, y: 100, width: 400, height: 300 })).not.toBeNull();
+      expect(visibility).toEqual([]);
+      expect(win.isVisible()).toBe(true);
+      expect(win.setBounds).not.toHaveBeenCalled();
+    } finally { session.close(); }
+  });
+
   it('keeps a finished recording available after a cancelled save and confines export to its chosen format', async () => {
     const largeDisplay = { ...display, bounds: { x: 0, y: 0, width: 1280, height: 900 }, scaleFactor: 1 };
     mocks.screen.getAllDisplays.mockReturnValue([largeDisplay]);
@@ -319,6 +375,35 @@ describe('screenshot window lifecycle', () => {
     expect(session.previewRecording(owner, owner.mainFrame, session.token, clip, 'webm')).toBe(true);
     expect(session.isClosed).toBe(true);
     expect(session.hasEditor).toBe(true);
+  });
+
+  // 用户反馈：录屏预览留在后台，下一段被旧预览占用。现有测试只检查可见性，
+  // 没有覆盖从不激活应用的采集面板交出焦点。最小输入：后台打开并收到 PAINTED。
+  // tier: unit；真实 RecordingPreview 入口，预热和非当前文档均不得抢焦点。
+  it.each(['darwin', 'win32'] as const)('activates clip preview only when presenting it on %s', (platform) => {
+    vi.stubGlobal('process', Object.create(process, { platform: { value: platform } }));
+    const preview = new RecordingPreview();
+    const clip = new Uint8Array(20); clip.set([0x1a, 0x45, 0xdf, 0xa3]);
+    preview.registerIpc(); preview.prewarm();
+    const win = windows[0], event = { sender: win.webContents, senderFrame: win.webContents.mainFrame };
+    const signal = (channel: string, ...args: unknown[]) => mocks.handlers.get(channel)!(event, ...args);
+    try {
+      signal(R.READY);
+      expect(preview.open(clip, 'webm', display)).toBe(true);
+      const doc = win.webContents.send.mock.calls.find(([name]) => name === R.BEGIN)![1];
+      signal(R.PAINTED, 'stale');
+      expect(mocks.focus).not.toHaveBeenCalled();
+      expect(win.focus).not.toHaveBeenCalled();
+      signal(R.PAINTED, doc.token);
+      expect(win.isVisible()).toBe(true);
+      expect(win.focus).toHaveBeenCalledOnce();
+      if (platform === 'darwin') {
+        expect(mocks.focus).toHaveBeenCalledExactlyOnceWith({ steal: true });
+        expect(mocks.focus.mock.invocationCallOrder[0]).toBeLessThan(win.focus.mock.invocationCallOrder[0]);
+      } else {
+        expect(mocks.focus).not.toHaveBeenCalled();
+      }
+    } finally { preview.dispose(); }
   });
 
   // New preview IPC/lifetime contract (Electron rules §3.1): existing image tests

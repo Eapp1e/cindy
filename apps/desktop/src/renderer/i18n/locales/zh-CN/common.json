@@ -975,7 +975,8 @@
       "autoScroll": "自动滚动",
       "stopScroll": "停止滚动",
       "edit": "编辑",
-      "autoUnavailable": "自动滚动已停止，可在选区内手动滚动"
+      "autoUnavailable": "自动滚动已停止，可在选区内手动滚动",
+      "autoPermission": "自动滚动需要「辅助功能」权限。请在系统设置中允许 Cindy 后再试，也可以在选区内手动滚动"
     }
   },
   "privacyExit": {

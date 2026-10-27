@@ -987,7 +987,8 @@
       "autoScroll": "Auto Scroll",
       "stopScroll": "Stop Scrolling",
       "edit": "Edit",
-      "autoUnavailable": "Auto scrolling stopped. You can scroll manually in the selection."
+      "autoUnavailable": "Auto scrolling stopped. You can scroll manually in the selection.",
+      "autoPermission": "Auto scrolling needs Accessibility permission. Allow Cindy in System Settings and try again, or scroll manually in the selection."
     }
   },
   "privacyExit": {

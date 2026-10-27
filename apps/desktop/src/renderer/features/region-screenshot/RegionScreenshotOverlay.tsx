@@ -16,6 +16,7 @@ import i18n from '@/i18n';
 import { getInitialThemeVariant } from '@/hooks/useTheme';
 import { themeService } from '@/themes/theme-service';
 import {
+  clampIntoArea,
   isRegionArrowKey,
   moveRegion,
   normalizeRegionSelection,
@@ -65,6 +66,7 @@ import { SCREENSHOT_INK, SCREENSHOT_OVERLAY, type ScreenshotInk } from './screen
 import { LiveCapturePanel } from './LiveCapturePanel';
 import { ScrollCaptureOverlay } from './ScrollCaptureOverlay';
 import { ScreenshotEditorViewport } from './ScreenshotEditorViewport';
+import { isPreciseWheel, WHEEL_GESTURE_GAP_MS } from './trackpad';
 import type { RegionCaptureBegin, RegionCaptureMode } from '../../../shared/regionCapture';
 
 /** 小于这个尺寸的拖动视为误点, 不形成选区。 */
@@ -84,6 +86,8 @@ interface ActiveSession {
   lastRegion: RegionRect | null;
   frameSize: RegionSize;
   frameData: ImageData;
+  /** 界面元素可用区域: 避开菜单栏、刘海与 Dock / 任务栏。 */
+  safeArea: RegionRect;
 }
 
 type Drag =
@@ -230,6 +234,8 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
   /** BEGIN 带来的鼠标位置, 会话状态生效后立即据此吸附 (见下方 effect)。 */
   const initialCursorRef = useRef<RegionPoint | null>(null);
   const wheelRef = useRef(0);
+  /** 触控板一次滑动 (含惯性) 只切换一级吸附层级。 */
+  const wheelGestureRef = useRef({ last: 0, stepped: false });
   const elementsRef = useRef<{
     inFlight: boolean;
     pending: RegionPoint | null;
@@ -237,6 +243,7 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
   }>({ inFlight: false, pending: null, cache: null });
 
   const viewport = session?.viewport ?? { width: window.innerWidth, height: window.innerHeight };
+  const safe = session?.safeArea ?? { x: 0, y: 0, width: viewport.width, height: viewport.height };
   const isSelected = selection !== null && (drag === null || drag.kind !== 'select');
 
   // ── 会话生命周期 ─────────────────────────────────────────────────────────
@@ -296,6 +303,7 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
         lastRegion: payload.lastRegion,
         frameSize: { width: payload.frame.width, height: payload.frame.height },
         frameData,
+        safeArea: payload.safeArea ?? { x: 0, y: 0, width: payload.viewport.width, height: payload.viewport.height },
       });
       // 窗口显示后才会合成新帧: 等两帧再报告已绘制, main 随即淡入。
       if (!imageEditor) requestAnimationFrame(() =>
@@ -783,10 +791,21 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
   const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     const s = state.current;
     if (!s.session || s.selection || s.drag) return;
+    const gesture = wheelGestureRef.current;
+    const precise = isPreciseWheel(event.nativeEvent);
+    if (precise) {
+      if (event.timeStamp - gesture.last > WHEEL_GESTURE_GAP_MS) {
+        gesture.stepped = false;
+        wheelRef.current = 0;
+      }
+      gesture.last = event.timeStamp;
+      if (gesture.stepped) return;
+    }
     wheelRef.current += event.deltaY;
     if (Math.abs(wheelRef.current) < WHEEL_STEP) return;
     const step = wheelRef.current < 0 ? 1 : -1;
     wheelRef.current = 0;
+    if (precise) gesture.stepped = true;
     // 向上滚 = 扩大到外层 (父元素 / 窗口 / 整屏), 向下滚 = 回到内层。
     setHover((previous) =>
       previous
@@ -1024,27 +1043,27 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
   let toolbarStyle: CSSProperties | null = null;
 
   if (isSelected && selection && !dragging) {
+    // 工具条只放在安全区内: 不被刘海遮住, 也不压在 Dock / 任务栏上; 选区本身可以覆盖它们。
     const bottom = selection.y + selection.height;
+    const safeBottom = safe.y + safe.height;
     const extra = styleTool ? toolbarSize.height + GAP : 0;
-    const below = bottom + GAP + toolbarSize.height + extra <= viewport.height;
-    const above = selection.y - GAP - toolbarSize.height - extra >= 0;
+    const below = bottom + GAP + toolbarSize.height + extra <= safeBottom;
+    const above = selection.y - GAP - toolbarSize.height - extra >= safe.y;
     const top = below
       ? bottom + GAP
       : above
         ? selection.y - GAP - toolbarSize.height
-        : bottom - GAP - toolbarSize.height;
-    const left = Math.min(
-      Math.max(0, selection.x + selection.width - toolbarSize.width),
-      Math.max(0, viewport.width - toolbarSize.width),
-    );
-    toolbarStyle = { left, top: Math.max(0, Math.min(top, viewport.height - toolbarSize.height)) };
-
+        : Math.min(bottom, safeBottom) - GAP - toolbarSize.height;
+    const position = clampIntoArea({ x: selection.x + selection.width - toolbarSize.width, y: top }, toolbarSize, safe);
+    toolbarStyle = { left: position.x, top: position.y };
   }
 
   const sizeLabel = longResult ? `${longResult.image.width} × ${longResult.image.height}` : highlight
     ? `${Math.round(highlight.width * scale)} × ${Math.round(highlight.height * scale)}`
     : null;
-  const sizeLabelTop = highlight ? (highlight.y - 28 >= 0 ? highlight.y - 28 : highlight.y + 6) : 0;
+  const sizeLabelTop = highlight
+    ? highlight.y - 28 >= safe.y ? highlight.y - 28 : Math.max(highlight.y, safe.y) + 6
+    : 0;
 
   const editingBounds = editing
     ? textBounds({ id: '', kind: 'text', at: editing.at, text: editing.text || ' ', color: editing.color, size: editing.size })
@@ -1198,13 +1217,13 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
       {session && !imageEditor && sizeLabel && highlight && (
         <div
           className="pointer-events-none absolute rounded-lg border border-[var(--border-default)] bg-[var(--surface-elevated)] px-2 py-0.5 text-12 tabular-nums text-[var(--text-primary)]"
-          style={{ left: Math.min(highlight.x, viewport.width - 120), top: sizeLabelTop }}
+          style={{ left: Math.max(safe.x, Math.min(highlight.x, safe.x + safe.width - 120)), top: sizeLabelTop }}
         >
           {sizeLabel}
         </div>
       )}
       {session && activeDisplay && !selection && !drag && (
-        <div className="pointer-events-none absolute left-1/2 top-16 -translate-x-1/2 whitespace-nowrap rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3.5 py-1.5 text-12 text-[var(--text-secondary)]">
+        <div style={{ left: safe.x + safe.width / 2, top: safe.y + 64 }} className="pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3.5 py-1.5 text-12 text-[var(--text-secondary)]">
           {session.lastRegion ? t('regionScreenshot.hintWithLast') : t('regionScreenshot.hint')}
         </div>
       )}
@@ -1231,9 +1250,9 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
           }}
         />
       )}
-      {session && !imageEditor && activeDisplay && <div className="absolute top-3 z-20 w-max max-w-[calc(100%-24px)] -translate-x-1/2" style={{ left: modeBarCenter ?? viewport.width / 2 }} onPointerEnter={() => setOverToolbar(true)} onPointerLeave={() => setOverToolbar(false)}>
+      {session && !imageEditor && activeDisplay && <div className="absolute z-20 w-max -translate-x-1/2" style={{ left: modeBarCenter ?? safe.x + safe.width / 2, top: safe.y + 12, maxWidth: safe.width - 24 }} onPointerEnter={() => setOverToolbar(true)} onPointerLeave={() => setOverToolbar(false)}>
         <ScreenshotModeBar mode={captureMode} finished={!!longResult} canAsk={isSelected && !dragging} aiMenuOpen={aiMenuOpen}
-          onPositionChange={setModeBarCenter}
+          area={safe} onPositionChange={setModeBarCenter}
           onMode={(mode) => { commitEditing(); setCaptureMode(mode); setTool(null); setSelectedId(null); setAiMenuOpen(false); setLiveError(false); }}
           onToggleAiMenu={() => setAiMenuOpen((open) => !open)} onAction={(action) => void runAction(action)} />
       </div>}
@@ -1245,6 +1264,7 @@ export function RegionScreenshotOverlay({ bridge, imageEditor = false }: { bridg
           frameSize={session.frameSize}
           point={pointer}
           viewport={viewport}
+          bounds={safe}
           color={colorAt(pointer)}
           scaleFactor={session.scaleFactor}
         />

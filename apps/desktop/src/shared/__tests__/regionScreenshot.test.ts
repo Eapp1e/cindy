@@ -6,6 +6,7 @@ import type { RegionScreenshotBitmap } from '../regionScreenshot';
 import {
   normalizeRegionSelection,
   nudgeRegion,
+  regionChromeArea,
   regionSelectionToImageCrop,
   resizeRegion,
   snapCandidates,
@@ -227,6 +228,31 @@ describe('continuous region capture', () => {
         expect(rect.x >= region.x + region.width || rect.x + rect.width <= region.x || rect.y >= region.y + region.height || rect.y + rect.height <= region.y).toBe(true);
       }
     }
+  });
+
+  // User report (macOS): screenshot chrome sat under the camera housing and over the Dock;
+  // live layouts only knew the display size. Minimal input: a 1470x956 notched display with
+  // a 33pt menu bar, 32pt notch and 70pt Dock. tier: unit.
+  it('keeps live controls out of the menu bar, notch and Dock while room remains', () => {
+    const bounds = { x: 0, y: 0, width: 1470, height: 956 };
+    const area = regionChromeArea(bounds, { x: 0, y: 33, width: 1470, height: 853 }, 32);
+    expect(area).toEqual({ x: 0, y: 33, width: 1470, height: 853 });
+    // An auto-hidden menu bar leaves the notch; negative-origin displays stay display-local.
+    expect(regionChromeArea({ ...bounds, x: -1470 }, { ...bounds, x: -1470 }, 32)).toEqual({ x: 0, y: 32, width: 1470, height: 924 });
+    expect(regionChromeArea(bounds, { x: 0, y: 0, width: 100, height: 956 })).toEqual(bounds);
+    const viewport = { width: 1470, height: 956 };
+    const inside = (r: { x: number; y: number; width: number; height: number }) =>
+      r.x >= area.x && r.y >= area.y && r.x + r.width <= area.x + area.width && r.y + r.height <= area.y + area.height;
+    const nearTop = { x: 200, y: 40, width: 700, height: 500 };
+    const layout = scrollCaptureLayout(nearTop, viewport, area)!;
+    for (const rect of [layout.preview, layout.auto, layout.actions]) expect(inside(rect)).toBe(true);
+    // Without the area the controls fit under this selection only by covering the Dock.
+    const nearDock = { x: 200, y: 300, width: 700, height: 530 };
+    expect(inside(recordingControlsBounds(nearDock, viewport, false)!)).toBe(false);
+    expect(inside(recordingControlsBounds(nearDock, viewport, false, undefined, area)!)).toBe(true);
+    // A selection filling the chrome area still gets controls on the display.
+    const filling = { x: 0, y: 33, width: 1470, height: 800 };
+    expect(recordingControlsBounds(filling, viewport, false, undefined, area)!.y).toBeGreaterThanOrEqual(833);
   });
 
   it('rejects mismatched recording formats and unbounded export buffers', () => {

@@ -60,6 +60,7 @@ export class ScreenshotEditor {
       token: randomUUID(), locale: getResolvedMainLocale(),
       viewport: { width: image.width, height: image.height }, scaleFactor: 1,
       frame: image, windows: [], lastRegion: selection, cursor: null,
+      safeArea: { x: 0, y: 0, width: image.width, height: image.height },
     } };
     const area = screen.getDisplayMatching(display.bounds).workArea;
     const width = Math.min(1000, area.width), height = Math.min(800, area.height);

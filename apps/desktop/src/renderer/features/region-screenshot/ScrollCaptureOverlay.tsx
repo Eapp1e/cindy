@@ -104,10 +104,10 @@ export function ScrollCaptureOverlay({ begin, token, bridge, onEdit }: {
     if (state.finishing) return;
     const accepted = await bridge.autoScroll(token, enabled);
     if (!state.active || state.finishing) return;
-    state.automatic = accepted && enabled;
+    state.automatic = accepted === true && enabled;
     state.stillFrames = 0;
     setAutomatic(state.automatic);
-    setError(accepted ? '' : 'autoUnavailable');
+    setError(accepted === 'accessibility' ? 'autoPermission' : accepted ? '' : 'autoUnavailable');
   }
 
   async function sample() {

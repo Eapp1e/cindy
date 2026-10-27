@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Minus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { RegionSize } from '../../../shared/regionScreenshot';
+import { isPreciseWheel, pinchZoomFactor } from './trackpad';
 
 /** Image coordinates stay unchanged: zoom/scroll only transform the editing viewport. */
 export function ScreenshotEditorViewport({ image, tools, children, onAction, onMinimize, onClose }: {
@@ -13,6 +14,9 @@ export function ScreenshotEditorViewport({ image, tools, children, onAction, onM
 }) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  /** 同一帧内连续的捏合事件按最新倍率叠乘, 不读渲染前的旧值。 */
+  const scaleRef = useRef(1);
   const [size, setSize] = useState({ width: 900, height: 600 });
   const [zoom, setZoom] = useState<number | 'width' | 'fit'>('width');
   useLayoutEffect(() => {
@@ -25,13 +29,25 @@ export function ScreenshotEditorViewport({ image, tools, children, onAction, onM
   const scale = !image ? 1 : typeof zoom === 'number' ? zoom : Math.max(0.01, Math.min(
     1, (size.width - 32) / image.width, zoom === 'fit' ? (size.height - 32) / image.height : Infinity,
   ));
-  const changeZoom = (next: number) => {
+  scaleRef.current = scale;
+  /** `anchor` 是视口内的客户端坐标; 缩放后它下面仍是同一个图像像素 (缺省为视口中心)。 */
+  const changeZoom = (next: number, anchor?: { x: number; y: number }) => {
     const node = scrollRef.current;
+    const content = contentRef.current;
     const ratio = Math.max(0.01, Math.min(4, next));
-    const y = node ? (node.scrollTop + node.clientHeight / 2) / scale : 0;
-    const x = node ? (node.scrollLeft + node.clientWidth / 2) / scale : 0;
+    const before = scaleRef.current;
+    scaleRef.current = ratio;
     setZoom(ratio);
-    requestAnimationFrame(() => { if (node) { node.scrollTop = y * ratio - node.clientHeight / 2; node.scrollLeft = x * ratio - node.clientWidth / 2; } });
+    if (!node || !content) return;
+    const viewport = node.getBoundingClientRect();
+    const point = anchor ?? { x: viewport.left + node.clientWidth / 2, y: viewport.top + node.clientHeight / 2 };
+    const rect = content.getBoundingClientRect();
+    const imageX = (point.x - rect.left) / before, imageY = (point.y - rect.top) / before;
+    requestAnimationFrame(() => {
+      const moved = content.getBoundingClientRect();
+      node.scrollLeft += moved.left + imageX * ratio - point.x;
+      node.scrollTop += moved.top + imageY * ratio - point.y;
+    });
   };
   useEffect(() => {
     const node = scrollRef.current;
@@ -39,7 +55,9 @@ export function ScreenshotEditorViewport({ image, tools, children, onAction, onM
     const wheel = (event: WheelEvent) => {
       if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
-      changeZoom(scale * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
+      // 触控板捏合 (ctrlKey) 与 ⌘ + 双指滑动连续缩放; 鼠标滚轮每格一级。以指针为中心。
+      const factor = isPreciseWheel(event) ? pinchZoomFactor(event.deltaY) : event.deltaY < 0 ? 1.1 : 1 / 1.1;
+      changeZoom(scaleRef.current * factor, { x: event.clientX, y: event.clientY });
     };
     node.addEventListener('wheel', wheel, { passive: false });
     return () => node.removeEventListener('wheel', wheel);
@@ -67,7 +85,7 @@ export function ScreenshotEditorViewport({ image, tools, children, onAction, onM
       {image && tools}
     </div>
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto p-4" tabIndex={0} aria-label={t('regionScreenshot.live.edit')}>
-      {image ? <div className="relative mx-auto" style={{ width: image.width * scale, height: image.height * scale }}>
+      {image ? <div ref={contentRef} className="relative mx-auto" style={{ width: image.width * scale, height: image.height * scale }}>
         <div className="absolute left-0 top-0 origin-top-left" style={{ width: image.width, height: image.height, transform: `scale(${scale})` }}>{children}</div>
       </div> : <p role="status" className="text-13 text-[var(--text-secondary)]">{t('regionScreenshot.editor.loading')}</p>}
     </div>

@@ -975,7 +975,8 @@
       "autoScroll": "自動捲動",
       "stopScroll": "停止捲動",
       "edit": "編輯",
-      "autoUnavailable": "自動捲動已停止，可在選取範圍內手動捲動"
+      "autoUnavailable": "自動捲動已停止，可在選取範圍內手動捲動",
+      "autoPermission": "自動捲動需要「輔助使用」權限。請在系統設定中允許 Cindy 後再試，也可以在選取範圍內手動捲動"
     }
   },
   "privacyExit": {

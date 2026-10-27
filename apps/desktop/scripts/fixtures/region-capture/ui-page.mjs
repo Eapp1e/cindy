@@ -80,6 +80,20 @@ export default {
       assert.equal(await page.evaluate(() => window.captureQa.keysRequested), false, 'recording does not request keyboard input');
       assert.equal(await page.locator('canvas').count(), 0, 'recording has no permanent thumbnail');
       await ui.capture('compact-controls');
+      // User regression: dragging the format/time area did nothing. Exercise real
+      // pointer capture, including release and continued recording after the move.
+      const bar = page.getByRole('region', { name: await ui.t('regionScreenshot.live.video'), exact: true });
+      const initial = await bar.boundingBox();
+      const label = await bar.getByText(ui.case === 'gif' ? 'GIF' : 'WebM', { exact: true }).boundingBox();
+      await page.mouse.move(label.x + label.width / 2, label.y + label.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(label.x + label.width / 2 + 90, label.y + label.height / 2 + 40, { steps: 6 });
+      await page.mouse.up();
+      const moved = await bar.boundingBox();
+      assert.ok(Math.abs(moved.x - initial.x - 90) < 1 && Math.abs(moved.y - initial.y - 40) < 1, 'format/time area moves the recording toolbar');
+      await page.mouse.move(20, 600);
+      assert.deepEqual(await bar.boundingBox(), moved, 'toolbar stays put after release');
+      await ui.capture('dragged-recording-controls');
     }
     else {
       const modeButton = await button('regionScreenshot.live.scroll');
@@ -233,11 +247,18 @@ export default {
       const dimensions = await page.locator('canvas').first().evaluate(el => [el.width, el.height]);
       await (await button('remoteDesktop.fit')).click();
       await (await button('remoteDesktop.actualSize')).click();
+      // The idle case produces a short image. Give it a smaller editing window
+      // so a wheel gesture has real overflow to scroll, just as with a long capture.
+      if (ui.case === 'idle') await page.setViewportSize({ width: 900, height: 400 });
       const review = page.locator('[tabindex="0"]');
+      assert.ok(await review.evaluate(el => el.scrollHeight > el.clientHeight), 'the editor has overflow to review');
+      await review.evaluate(el => { el.scrollTop = 0; });
       await review.hover(); await page.mouse.wheel(0, 300);
       await page.waitForFunction(() => document.querySelector('[tabindex="0"]').scrollTop > 0);
       assert.deepEqual(await page.locator('canvas').first().evaluate(el => [el.width, el.height]), dimensions, 'zoom and scrolling do not resample the source');
-      await page.getByRole('button', { name: `${await ui.t('regionScreenshot.save')} (Ctrl+S)`, exact: true }).click();
+      // The shortcut hint follows the host platform: "(Ctrl+S)" on Windows, "(⌘S)" on macOS.
+      const save = (await ui.t('regionScreenshot.save')).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      await page.getByRole('button', { name: new RegExp(`^${save} \\((Ctrl\\+|⌘)S\\)$`) }).click();
       await page.waitForFunction(() => window.captureQa.exportedHeight > 240);
       assert.ok(await page.evaluate(() => window.captureQa.annotationPixels > 0), 'independent editor annotations are included in the full-resolution export');
     } else {

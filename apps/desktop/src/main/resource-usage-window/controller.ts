@@ -45,6 +45,8 @@ export interface ResourceUsageWindowControllerDeps {
    */
   pauseWhenHidden?: boolean;
   onActivityChanged?: (window: BrowserWindow, active: boolean) => void;
+  /** Runs only when a requested presentation is shown, never during hidden prewarm. */
+  onBeforeShow?: (window: BrowserWindow) => void;
   onCloseRequested?: (window: BrowserWindow) => void;
   onUnavailable?: () => void;
   isOpenSender: (sender: WebContents) => boolean;
@@ -333,6 +335,7 @@ export class ResourceUsageWindowController {
     if (!win.isVisible()) this.enteringNativeFullscreen = false;
     this.visibilityGeneration += 1;
     this.setSamplingActive(win, true);
+    this.deps.onBeforeShow?.(win);
     if (win.isMinimized()) win.restore();
     // 打开时只负责显示和聚焦，不再按 owner 状态驱动 setFullScreen。
     // macOS 沿用本窗口的原生 Space / 全屏呈现；仅关闭时显式退出全屏再隐藏。

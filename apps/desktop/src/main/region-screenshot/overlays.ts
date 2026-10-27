@@ -52,7 +52,7 @@ interface Entry extends OverlayWindow {
  * 每块显示器一个全屏框选浮层, 隐藏预热、截图时显示、结束后销毁并重新预热。
  *
  * 与 §3.1 独立辅助窗口基线的差异 (全局热键 + 置顶系统浮层的平台约束):
- * - 不随主窗口挂父子关系、不进任务栏 / Dock, 置顶在屏保层级;
+ * - 不随主窗口挂父子关系、不进任务栏 / Dock, 置顶在屏保层级; macOS 用不激活应用的面板;
  * - 「就绪」分两段: 预热时页面挂载, 每次截图再等定格画面绘制后才显示
  *   (见 RegionScreenshotSession); 隐藏前由页面清空画面与交互态;
  * - 显示器增减或分辨率变化时按显示器重建, 不尝试在原窗口上迁移。
@@ -183,6 +183,9 @@ export class OverlayPool {
       // 定格画面绘制前的底色; 窗口在画面绘制完成前保持全透明, 用户看不到它。
       transparent: true,
       backgroundColor: '#00000000',
+      // macOS: 不激活应用的面板。能拿键盘焦点, 但截图前的应用保持前台: 菜单栏、
+      // Dock 不跳动, 结束时不必抢回焦点, 滚动截图时触控板滚动与惯性照常交给它。
+      ...(process.platform === 'darwin' ? { type: 'panel' } : {}),
     });
     const entry: Entry = { window, displayId: display.id, shellReady: false, waiters: [] };
     this.byDisplay.set(display.id, entry);

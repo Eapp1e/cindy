@@ -161,8 +161,10 @@ export const APP_SHORTCUT_DEFINITIONS: ReadonlyArray<AppShortcutDefinition> = [
     getDefaultCombos: (platform) => [modCombo('KeyB', platform)],
   },
   // 全局框选截图: Cindy 不在前台也生效，可复制、保存、贴图或交给新任务。默认键避开系统截图
-  // (macOS ⇧⌘3/4/5/6、Windows Win+Shift+S) 与常见 IM 截图键 (Ctrl+Alt+A、
-  // Alt+A、Ctrl+Shift+A)。暂不支持 Linux (Wayland 无可靠的全局快捷键与静默截屏)。
+  // (macOS ⇧⌘3/4/5/6、Windows Win+Shift+S) 与常见 IM 截图键 (Windows: Ctrl+Alt+A、
+  // Alt+A、Ctrl+Shift+A; macOS: 飞书 ⇧⌘A、微信 / QQ ⌃⌘A)。macOS 不用 ⇧⌘S: 它是几乎所有
+  // 应用的「存储为」, 全局注册会把它从每个应用里拿走。暂不支持 Linux (Wayland 无可靠的
+  // 全局快捷键与静默截屏)。
   {
     id: 'region-screenshot',
     scope: 'global',
@@ -172,8 +174,8 @@ export const APP_SHORTCUT_DEFINITIONS: ReadonlyArray<AppShortcutDefinition> = [
     platforms: ['darwin', 'win32'],
     getDefaultCombos: (platform) =>
       platform === 'darwin'
-        ? [combo('KeyS', { meta: true, shift: true })]
-        : [combo('KeyS', { alt: true, shift: true })],
+        ? [combo('KeyA', { ctrl: true, shift: true })]
+        : [combo('KeyA', { alt: true, shift: true })],
   },
   {
     id: 'cycle-permission-mode',

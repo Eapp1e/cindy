@@ -198,12 +198,14 @@ export function ScreenshotModeBar(props: {
   aiMenuOpen: boolean;
   onToggleAiMenu: () => void;
   onAction: (action: RegionScreenshotAiAction) => void;
+  /** 可拖动的横向范围 (本显示器 DIP 的安全区), 不拖进刘海或屏幕外。 */
+  area: { x: number; width: number };
   onPositionChange: (center: number) => void;
 }) {
   const { t } = useTranslation();
   const drag = useRef<{ pointerId: number; x: number; left: number; width: number } | null>(null);
   const moveTo = (left: number, width: number) => {
-    const bounded = Math.max(8, Math.min(window.innerWidth - width - 8, left));
+    const bounded = Math.max(props.area.x + 8, Math.min(props.area.x + props.area.width - width - 8, left));
     props.onPositionChange(bounded + width / 2);
   };
   return <div className="pointer-events-auto relative flex flex-wrap items-center justify-center gap-1 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-1"

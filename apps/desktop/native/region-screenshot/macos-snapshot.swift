@@ -13,6 +13,8 @@
 //   answer is empty and the overlay snaps to windows only.
 // - {"id":3,"op":"frontmost"} / {"id":4,"op":"activate","pid":P}  remember and
 //   give focus back to the app the user was in before the screenshot.
+// - {"id":5,"op":"screens"}  per display the top inset taken by the camera
+//   housing (notch), also while the menu bar is hidden.
 //
 // Geometry, process ids and explicitly requested physical key labels only.
 
@@ -23,6 +25,9 @@ import Foundation
 let elementBudget: TimeInterval = 0.25
 let maxDepth = 40
 let minSide: CGFloat = 4
+/// Windows at or above the Dock level (Dock, menu bar, status items, Control
+/// Centre, cursor and shield windows) are system chrome, not snap targets.
+let maxSnapLayer = Int(CGWindowLevelForKey(.dockWindow))
 var elementDeadline: Date?
 
 func emit(_ object: [String: Any]) {
@@ -45,6 +50,9 @@ func onScreenWindows() -> [[String: Any]] {
   for info in list {
     let alpha = (info[kCGWindowAlpha as String] as? Double) ?? 1
     if alpha <= 0.01 { continue }
+    let layer = (info[kCGWindowLayer as String] as? Int) ?? 0
+    if layer < 0 || layer >= maxSnapLayer { continue }
+    if (info[kCGWindowOwnerName as String] as? String) == "Window Server" { continue }
     guard let bounds = info[kCGWindowBounds as String] as? NSDictionary,
       let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
       rect.width >= minSide, rect.height >= minSide,
@@ -119,6 +127,16 @@ func elementChain(pid: pid_t, point: CGPoint) -> [[Double]] {
   return chain.reversed().map(rectArray)
 }
 
+func screenInsets() -> [[String: Any]] {
+  NSScreen.screens.compactMap { screen in
+    guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+    else { return nil }
+    var top: CGFloat = 0
+    if #available(macOS 12.0, *) { top = screen.safeAreaInsets.top }
+    return ["id": number.uint32Value, "top": Double(top)]
+  }
+}
+
 setvbuf(stdout, nil, _IOLBF, 0)
 while let line = readLine() {
   guard let data = line.data(using: .utf8),
@@ -161,6 +179,8 @@ while let line = readLine() {
     emit(["id": id, "keys": Array(labels.filter { CGEventSource.keyState(.combinedSessionState, key: $0.0) }.prefix(8).map { $0.1 })])
   case "windows":
     emit(["id": id, "windows": onScreenWindows()])
+  case "screens":
+    emit(["id": id, "screens": screenInsets()])
   case "elements":
     if let pid = (request["pid"] as? NSNumber)?.int32Value,
       let x = (request["x"] as? NSNumber)?.doubleValue,

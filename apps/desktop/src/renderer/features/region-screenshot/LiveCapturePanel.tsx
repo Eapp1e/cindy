@@ -31,7 +31,7 @@ export function LiveCapturePanel({ begin, token, bridge }: { begin: RegionCaptur
   const [expanded, setExpanded] = useState(false);
   const layout = begin.recordingLayout!;
   const [controls, setControls] = useState(layout.controls);
-  const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const drag = useRef<{ pointerId: number; x: number; y: number; left: number; top: number; point: Point } | null>(null);
   const controlsRequest = useRef(0);
   const [tool, setTool] = useState<Mark['kind'] | null>(null);
   const [result, setResult] = useState<Uint8Array<ArrayBuffer> | null>(null);
@@ -190,7 +190,7 @@ export function LiveCapturePanel({ begin, token, bridge }: { begin: RegionCaptur
   }
 
   async function moveControls(nextExpanded: boolean, point?: Point, dragging = false) {
-    const next = recordingControlsBounds(begin.selection, layout.viewport, nextExpanded, point);
+    const next = recordingControlsBounds(begin.selection, layout.viewport, nextExpanded, point, layout.area);
     if (!next) { setError('annotationNoRoom'); return; }
     const request = ++controlsRequest.current;
     setControls(next); setExpanded(nextExpanded);
@@ -200,6 +200,21 @@ export function LiveCapturePanel({ begin, token, bridge }: { begin: RegionCaptur
     } catch { if (runtime.current.active) setError('captureFailed'); }
   }
 
+  function dragPoint(event: PointerEvent<HTMLButtonElement>): Point | null {
+    const start = drag.current;
+    if (!start || start.pointerId !== event.pointerId) return null;
+    return { x: start.left + event.clientX - start.x, y: start.top + event.clientY - start.y };
+  }
+
+  function endDrag(event: PointerEvent<HTMLButtonElement>, finalPoint?: Point | null) {
+    const start = drag.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    drag.current = null;
+    // Use the final pointer position, not the last React render / IPC response.
+    void moveControls(expanded, finalPoint ?? start.point);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+
   return <div className="pointer-events-none fixed inset-0 select-none text-12 text-[var(--text-primary)]">
     <div className="absolute border-2 border-[var(--focus-ring)]" style={{ left: begin.selection.x - 2, top: begin.selection.y - 2, width: begin.selection.width + 4, height: begin.selection.height + 4 }} />
     {phase === 'countdown' && <div className="absolute flex items-center justify-center" style={{ left: begin.selection.x, top: begin.selection.y, width: begin.selection.width, height: begin.selection.height }}>
@@ -207,14 +222,23 @@ export function LiveCapturePanel({ begin, token, bridge }: { begin: RegionCaptur
     </div>}
     <section aria-label={t('regionScreenshot.live.video')} className="pointer-events-auto absolute flex flex-col gap-1 overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-2" style={{ left: controls.x, top: controls.y, width: controls.width, height: controls.height }}>
     <div className="flex shrink-0 items-center gap-1">
-      <button type="button" aria-label={t('regionScreenshot.moveToolbar')} className="flex h-7 w-7 shrink-0 cursor-move items-center justify-center rounded-full hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-        onPointerDown={(event) => { drag.current = { x: event.clientX, y: event.clientY, left: controls.x, top: controls.y }; event.currentTarget.setPointerCapture(event.pointerId); void moveControls(expanded, controls, true); }}
-        onPointerMove={(event) => { const start = drag.current; if (start) void moveControls(expanded, { x: start.left + event.clientX - start.x, y: start.top + event.clientY - start.y }, true); }}
-        onPointerUp={() => { drag.current = null; void moveControls(expanded, controls); }}
-        onLostPointerCapture={() => { if (drag.current) { drag.current = null; void moveControls(expanded, controls); } }}
-        onKeyDown={(event) => { const delta = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] }[event.key]; if (delta) { event.preventDefault(); void moveControls(expanded, { x: controls.x + delta[0], y: controls.y + delta[1] }); } }}><GripVertical size={14} /></button>
-      <span className="text-[var(--text-secondary)]">{begin.mode === 'gif' ? 'GIF' : 'WebM'}</span>
-      <span className="mr-auto font-medium tabular-nums">{`${Math.floor(elapsed / 60_000)}:${String(Math.floor(elapsed / 1000) % 60).padStart(2, '0')}`} / 5:00</span>
+      <button type="button" aria-label={t('regionScreenshot.moveToolbar')} className="flex h-7 min-w-0 flex-1 touch-none cursor-grab items-center gap-1 rounded-full text-left hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] active:cursor-grabbing"
+        onPointerDown={(event) => {
+          if (event.button !== 0 || !event.isPrimary) return;
+          event.preventDefault();
+          drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: controls.x, top: controls.y, point: controls };
+          event.currentTarget.setPointerCapture(event.pointerId);
+          void moveControls(expanded, controls, true);
+        }}
+        onPointerMove={(event) => { const point = dragPoint(event); if (point && drag.current) { drag.current.point = point; void moveControls(expanded, point, true); } }}
+        onPointerUp={(event) => endDrag(event, dragPoint(event))}
+        onPointerCancel={(event) => endDrag(event)}
+        onLostPointerCapture={(event) => endDrag(event)}
+        onKeyDown={(event) => { const delta = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] }[event.key]; if (delta) { event.preventDefault(); void moveControls(expanded, { x: controls.x + delta[0], y: controls.y + delta[1] }); } }}>
+        <span className="flex w-7 shrink-0 justify-center"><GripVertical size={14} /></span>
+        <span className="text-[var(--text-secondary)]">{begin.mode === 'gif' ? 'GIF' : 'WebM'}</span>
+        <span className="whitespace-nowrap font-medium tabular-nums">{`${Math.floor(elapsed / 60_000)}:${String(Math.floor(elapsed / 1000) % 60).padStart(2, '0')}`} / 5:00</span>
+      </button>
       {(phase === 'capturing' || phase === 'paused') && <>
         <Button size="xs" variant="secondary" tone={expanded ? 'default' : 'quiet'} className="w-7 px-0" aria-label={t('regionScreenshot.live.annotate')} aria-pressed={expanded} onClick={() => void moveControls(!expanded)}><Pencil size={14} /></Button>
         <Button size="xs" variant="secondary" tone="quiet" className="w-7 px-0" aria-label={t(`regionScreenshot.live.${phase === 'capturing' ? 'pause' : 'resume'}`)} onClick={pause}>{phase === 'capturing' ? <Pause size={14} /> : <Play size={14} />}</Button>

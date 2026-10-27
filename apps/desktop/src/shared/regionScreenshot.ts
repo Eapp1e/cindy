@@ -155,6 +155,11 @@ export interface RegionScreenshotBegin {
   lastRegion: RegionRect | null;
   /** 截图时鼠标在本显示器上的位置 (DIP); 不在本屏为 null。浮层据此立即吸附高亮, 不必等鼠标移动。 */
   cursor: RegionPoint | null;
+  /**
+   * 工具条、放大镜、提示等界面元素可用的区域 (本显示器 DIP): 避开菜单栏、刘海、
+   * Dock / 任务栏。选区本身仍可覆盖整块显示器。见 {@link regionChromeArea}。
+   */
+  safeArea: RegionRect;
 }
 
 export interface RegionScreenshotExport {
@@ -413,6 +418,34 @@ export function rectContains(rect: RegionRect, point: RegionPoint): boolean {
     point.y >= rect.y &&
     point.y < rect.y + rect.height
   );
+}
+
+/** 界面元素区域小于这个尺寸时视为异常 (如工作区读数错误), 改用整块显示器。 */
+const MIN_CHROME_AREA = 320;
+
+/**
+ * 截图界面元素可用的区域 (显示器内 DIP): 系统工作区 (已除去菜单栏、Dock / 任务栏),
+ * 顶部再让出摄像头刘海 `topInset` (菜单栏自动隐藏时工作区仍包含刘海那一条)。
+ * 全局坐标的 `bounds` / `workArea` 来自 Electron Display; 结果异常时返回整块显示器。
+ */
+export function regionChromeArea(bounds: RegionRect, workArea: RegionRect, topInset = 0): RegionRect {
+  const whole = { x: 0, y: 0, width: bounds.width, height: bounds.height };
+  const values = [bounds.x, bounds.y, bounds.width, bounds.height, workArea.x, workArea.y, workArea.width, workArea.height, topInset];
+  if (!values.every(isFiniteNumber)) return whole;
+  const left = clamp(workArea.x - bounds.x, 0, bounds.width);
+  const right = clamp(workArea.x + workArea.width - bounds.x, 0, bounds.width);
+  const top = clamp(Math.max(workArea.y - bounds.y, topInset), 0, bounds.height);
+  const bottom = clamp(workArea.y + workArea.height - bounds.y, 0, bounds.height);
+  if (right - left < MIN_CHROME_AREA || bottom - top < MIN_CHROME_AREA) return whole;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/** 把 `size` 大小的界面元素移进 `area`; 放不下时贴住左上角。 */
+export function clampIntoArea(point: RegionPoint, size: RegionSize, area: RegionRect): RegionPoint {
+  return {
+    x: Math.max(area.x, Math.min(point.x, area.x + area.width - size.width)),
+    y: Math.max(area.y, Math.min(point.y, area.y + area.height - size.height)),
+  };
 }
 
 /** 与视口求交; 无交集返回 null。 */

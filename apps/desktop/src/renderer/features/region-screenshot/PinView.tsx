@@ -6,13 +6,17 @@ import i18n from '@/i18n';
 import type { RegionScreenshotPinState } from '../../../shared/regionScreenshot';
 import { bitmapToImageData, type RegionScreenshotPinBridge } from './bridge';
 import { SCREENSHOT_OVERLAY } from './screenshotColors';
+import { isPreciseWheel, pinchZoomFactor } from './trackpad';
 
 /** 触控板一次滑动会产生很多滚轮事件, 累计到这个量才缩放一级。 */
 const WHEEL_STEP = 40;
+/** 与 main 的单级缩放倍率一致: 捏合按连续倍率换算成 (小数) 级数。 */
+const ZOOM_STEP_LOG = Math.log(1.1);
 const ZOOM_BADGE_MS = 900;
 
 /**
- * 贴图窗口内容: 整窗显示截图。拖动移动、滚轮缩放、Ctrl / ⌘ + 滚轮调不透明度、
+ * 贴图窗口内容: 整窗显示截图。拖动移动、滚轮缩放 (macOS 触控板用双指捏合连续缩放,
+ * 双指滑动不缩放)、Ctrl / ⌘ + 滚轮调不透明度、
  * 双击或 Esc 关闭、右键菜单; 鼠标穿透时只在右上角留一个「恢复」按钮接收点击。
  * 截图本身是用户内容; 描边、按钮与缩放提示走主题 token。
  */
@@ -25,6 +29,7 @@ export function PinView({ bridge }: { bridge: RegionScreenshotPinBridge }) {
   const dragging = useRef(false);
   const frame = useRef<number | null>(null);
   const wheel = useRef(0);
+  const pinch = useRef<{ steps: number; x: number; y: number; frame: number | null }>({ steps: 0, x: 0, y: 0, frame: null });
   const lastZoom = useRef(1);
 
   useEffect(() => {
@@ -104,6 +109,22 @@ export function PinView({ bridge }: { bridge: RegionScreenshotPinBridge }) {
       }}
       onWheel={(event) => {
         if (state.passThrough) return;
+        if (isMac && event.ctrlKey) {
+          // 双指捏合: 每帧合并一次, 按捏合倍率连续缩放, 以指针为锚点。
+          const gesture = pinch.current;
+          gesture.steps += Math.log(pinchZoomFactor(event.deltaY)) / ZOOM_STEP_LOG;
+          gesture.x = event.clientX;
+          gesture.y = event.clientY;
+          gesture.frame ??= requestAnimationFrame(() => {
+            gesture.frame = null;
+            const steps = gesture.steps;
+            gesture.steps = 0;
+            if (steps) bridge.zoom(steps, gesture.x, gesture.y);
+          });
+          return;
+        }
+        // macOS 触控板双指滑动是最常用的手势, 不拿来缩放; 鼠标滚轮与 ⌘ + 滑动照旧。
+        if (isMac && !event.metaKey && isPreciseWheel(event.nativeEvent)) return;
         wheel.current += event.deltaY;
         if (Math.abs(wheel.current) < WHEEL_STEP) return;
         const steps = wheel.current < 0 ? 1 : -1;

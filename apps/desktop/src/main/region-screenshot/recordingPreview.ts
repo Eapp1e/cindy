@@ -40,6 +40,11 @@ export class RecordingPreview {
       prewarmWork: false, pauseWhenHidden: false, activityChannel: C.ACTIVITY,
       isOpenSender: (sender) => sender === this.window?.webContents,
       resolveNativeTitle: () => t('regionScreenshot.live.preview'),
+      onBeforeShow: () => {
+        // Capture panels leave the captured app active. Activate only when the
+        // requested preview is presented, then let the controller focus its window.
+        if (process.platform === 'darwin') app.focus({ steal: true });
+      },
       onCloseRequested: () => this.close(),
       onUnavailable: () => { this.document = null; },
     });

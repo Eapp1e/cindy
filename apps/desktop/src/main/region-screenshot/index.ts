@@ -239,10 +239,11 @@ async function startRegionScreenshot(): Promise<void> {
     const snapshot = helperReady.then(async (h) => ({
       windows: await h.windows(),
       frontmostPid: await h.frontmostPid(),
+      topInsets: await h.screenInsets(),
     }));
     const [captures, snap] = await Promise.all([
       captureDisplays(screen.getAllDisplays()),
-      snapshot.catch(() => ({ windows: [] as SnapshotWindow[], frontmostPid: null })),
+      snapshot.catch(() => ({ windows: [] as SnapshotWindow[], frontmostPid: null, topInsets: new Map<number, number>() })),
     ]);
     helper = await helperReady;
     const capturedAt = Date.now();
@@ -258,6 +259,7 @@ async function startRegionScreenshot(): Promise<void> {
       captures,
       helper: sessionHelper,
       windows: snap.windows,
+      topInsets: snap.topInsets,
       lastRegions,
       openEditor: (image, display, selection) => editor.open(image, display, selection),
       openRecording: (bytes, format, display) => recordingPreview.open(bytes, format, display),

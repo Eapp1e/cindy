@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import type { RegionPoint, RegionSize } from '../../../shared/regionScreenshot';
+import { clampIntoArea, type RegionPoint, type RegionRect, type RegionSize } from '../../../shared/regionScreenshot';
 import { SCREENSHOT_OVERLAY } from './screenshotColors';
 
 /** 放大镜取样边长 (原图像素, 奇数让指针落在正中一格) 与放大倍数。 */
@@ -33,6 +33,7 @@ export function Magnifier({
   frameSize,
   point,
   viewport,
+  bounds,
   color,
   scaleFactor,
 }: {
@@ -40,6 +41,8 @@ export function Magnifier({
   frameSize: RegionSize;
   point: RegionPoint;
   viewport: RegionSize;
+  /** 放大镜可放置的区域 (避开刘海与 Dock); 缺省为整个视口。 */
+  bounds?: RegionRect;
   color: PixelColor | null;
   scaleFactor: number;
 }) {
@@ -74,13 +77,15 @@ export function Magnifier({
 
   const width = VIEW + 2;
   const height = VIEW + 58;
-  const left = point.x + OFFSET + width > viewport.width ? point.x - OFFSET - width : point.x + OFFSET;
-  const top = point.y + OFFSET + height > viewport.height ? point.y - OFFSET - height : point.y + OFFSET;
+  const area = bounds ?? { x: 0, y: 0, width: viewport.width, height: viewport.height };
+  const left = point.x + OFFSET + width > area.x + area.width ? point.x - OFFSET - width : point.x + OFFSET;
+  const top = point.y + OFFSET + height > area.y + area.height ? point.y - OFFSET - height : point.y + OFFSET;
+  const position = clampIntoArea({ x: left, y: top }, { width, height }, area);
 
   return (
     <div
       className="pointer-events-none fixed overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)]"
-      style={{ left: Math.max(0, left), top: Math.max(0, top), width }}
+      style={{ left: position.x, top: position.y, width }}
     >
       <canvas ref={canvasRef} style={{ width: VIEW, height: VIEW, display: 'block' }} />
       <div className="flex flex-col gap-0.5 border-t border-[var(--border-default)] px-2 py-1.5 text-12 leading-[1.35] tabular-nums">

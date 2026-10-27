@@ -1,8 +1,8 @@
 import {
-  app,
   clipboard,
   nativeImage,
   screen,
+  systemPreferences,
   type Display,
   type NativeImage,
   type WebContents,
@@ -20,6 +20,7 @@ import {
   intersectRegion,
   isRegionScreenshotAction,
   normalizeRegionSelection,
+  regionChromeArea,
   regionSelectionToImageCrop,
   REGION_SCREENSHOT_CHANNEL,
   validateRegionBitmap,
@@ -65,6 +66,8 @@ export interface RegionScreenshotSessionDeps {
   /** 定格时的窗口列表 (识别程序的坐标系), 下标即页面看到的窗口 id。 */
   windows: readonly SnapshotWindow[];
   lastRegions: ReadonlyMap<number, RegionRect>;
+  /** macOS: 每块显示器顶部被刘海占用的高度 (DIP), 按 Display.id。 */
+  topInsets?: ReadonlyMap<number, number>;
   onResult: (result: RegionScreenshotResult) => void;
   openEditor?: (image: RegionScreenshotBitmap, display: Display, selection: RegionRect) => boolean;
   openRecording?: (bytes: Uint8Array<ArrayBuffer>, format: 'webm' | 'gif', display: Display) => boolean;
@@ -220,7 +223,13 @@ export class RegionScreenshotSession {
       windows,
       lastRegion: this.deps.lastRegions.get(display.id) ?? null,
       cursor: cursorOnDisplay ? local : null,
+      safeArea: this.chromeArea(display),
     };
+  }
+
+  /** 界面元素 (工具条、预览、控制条) 可用的区域: 避开菜单栏、刘海与 Dock / 任务栏。 */
+  private chromeArea(display: Display): RegionRect {
+    return regionChromeArea(display.bounds, display.workArea ?? display.bounds, this.deps.topInsets?.get(display.id) ?? 0);
   }
 
   /** 只认本次会话借用的浮层顶层 frame, 且 token 必须是本次会话的。 */
@@ -309,8 +318,9 @@ export class RegionScreenshotSession {
     const { display, image } = member.capture;
     const selection = normalizeRegionSelection(rawSelection, display.bounds, display.scaleFactor);
     if (!selection || selection.width < 32 || selection.height < 32) return null;
-    const layout = mode === 'scroll' ? scrollCaptureLayout(selection, display.bounds) : null;
-    const controls = mode === 'scroll' ? null : recordingControlsBounds(selection, display.bounds, false);
+    const area = this.chromeArea(display);
+    const layout = mode === 'scroll' ? scrollCaptureLayout(selection, display.bounds, area) : null;
+    const controls = mode === 'scroll' ? null : recordingControlsBounds(selection, display.bounds, false, undefined, area);
     if (!layout && !controls) return null;
     const size = image.getSize();
     const mapping = regionSelectionToImageCrop(selection, display.bounds, size, display.scaleFactor);
@@ -327,12 +337,14 @@ export class RegionScreenshotSession {
       hideScreenshotOverlay(other.overlay.window);
     }
     this.recordingControls = controls;
-    member.overlay.window.setBounds(display.bounds, false);
-    // Return input focus to the underlying app without closing the capture panel.
-    member.overlay.window.blur();
+    // Keep the visible panel's geometry and stacking unchanged. On macOS blur()
+    // orders it out and back, causing a full-screen flash at the live handoff.
+    // The nonactivating panel already leaves the captured app in the foreground;
+    // hit-testing below returns pointer input outside the controls to that app.
+    if (process.platform !== 'darwin') member.overlay.window.blur();
     this.updateScrollHitTest();
     this.scrollPointerTimer = setInterval(() => this.updateScrollHitTest(), 30);
-    return { mode: mode as RegionCaptureMode, selection, first: { ...croppedSize, data: new Uint8Array(crop.toBitmap()) }, ...(layout ? { scrollLayout: layout } : {}), ...(controls ? { recordingLayout: { viewport: display.bounds, controls } } : {}) };
+    return { mode: mode as RegionCaptureMode, selection, first: { ...croppedSize, data: new Uint8Array(crop.toBitmap()) }, ...(layout ? { scrollLayout: layout } : {}), ...(controls ? { recordingLayout: { viewport: display.bounds, controls, area } } : {}) };
   }
 
   updateRecordingControls(sender: WebContents, frame: Electron.WebFrameMain | null, token: unknown, expanded: unknown, point: unknown, dragging: unknown): RegionRect | null {
@@ -345,7 +357,8 @@ export class RegionScreenshotSession {
       if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return null;
       position = { x, y };
     }
-    const controls = recordingControlsBounds(live.selection, member.capture.display.bounds, expanded, position);
+    const { display } = member.capture;
+    const controls = recordingControlsBounds(live.selection, display.bounds, expanded, position, this.chromeArea(display));
     if (!controls) return null;
     this.recordingControls = controls;
     this.draggingControls = dragging;
@@ -377,11 +390,17 @@ export class RegionScreenshotSession {
     live.member.overlay.window.setIgnoreMouseEvents(!interactive, { forward: true });
   }
 
-  autoScroll(sender: WebContents, frame: Electron.WebFrameMain | null, token: unknown, enabled: unknown): boolean {
+  /** `'accessibility'`: macOS 未授权辅助功能, 已弹出系统询问 (可直接打开系统设置)。 */
+  autoScroll(sender: WebContents, frame: Electron.WebFrameMain | null, token: unknown, enabled: unknown): boolean | 'accessibility' {
     const member = this.member(sender, frame, token);
     const live = this.live;
     if (!member || !live || live.member !== member || live.mode !== 'scroll' || live.editing || this.exporting || typeof enabled !== 'boolean') return false;
     if (enabled && !live.target) return false;
+    // 自动滚动向源应用投递滚轮事件, macOS 需要辅助功能权限; 没有时说明原因而不是静默失败。
+    if (enabled && process.platform === 'darwin' && !systemPreferences.isTrustedAccessibilityClient(false)) {
+      systemPreferences.isTrustedAccessibilityClient(true);
+      return 'accessibility';
+    }
     live.automatic = enabled;
     return true;
   }
@@ -556,11 +575,10 @@ export class RegionScreenshotSession {
         target = member;
       }
     }
-    // 光标所在屏的浮层拿键盘焦点 (标注文字、快捷键都要); macOS 需要先激活 Cindy,
-    // 会话结束后由调用方把焦点还给截图前的前台应用。
+    // 光标所在屏的浮层拿键盘焦点 (标注文字、快捷键都要)。macOS 浮层是不激活应用的
+    // 面板: 截图前的应用保持前台, 菜单栏不切换, 滚动截图时触控板滚动照常交给它。
     const window = (target ?? [...this.members.values()][0])?.overlay.window;
     if (!window || window.isDestroyed()) return;
-    if (process.platform === 'darwin') app.focus({ steal: true });
     window.focus();
   }
 
