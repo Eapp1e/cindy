@@ -34,6 +34,7 @@ import * as schema from '../../localDb/schema';
 import { listAllBlobRecords, listCacheBlobsByLru } from '../../cindy-media/ledger';
 import { resolveHashRef } from '../../cindy-media/blobStore';
 import { evictCacheBlobs, scanCache } from '../../cindy-media/recycler';
+import { createStorageIpcHandlers } from '../../cindy-media/storageIpc';
 import {
   invalidateRemoteMediaPersistentWrites,
   createSentImageRetainer,
@@ -148,6 +149,38 @@ it('keeps Chat Server images out of automatic file eviction and lets manual imag
   expect(service.cacheGeneration).not.toBe(generation);
   expect((await service.download('room', 'media')).url).toBe(url);
   expect(fetchMedia).toHaveBeenCalledTimes(2);
+});
+
+// PR #7442: a lookup started after cleanup's initial invalidation could publish a
+// stale hit or recreate the cleared index. Unit timing regression through the real
+// cleanup handler + downloader; existing cases only started reads before cleanup.
+it.each(['success', 'failure'] as const)('rejects an image lookup started during cleanup after its %s', async outcome => {
+  const api = vi.fn(async () => chatMetadata()) as unknown as ChatApi;
+  const service = createChatMedia(api, () => true, chatEndpoint);
+  await service.download('room', 'media');
+  const [record] = await listAllBlobRecords(state.db);
+  let releaseScan!: () => void;
+  const scanBarrier = new Promise<void>(resolve => { releaseScan = resolve; });
+  const handlers = createStorageIpcHandlers({ db: state.db, getQueueScanTexts: () => [],
+    loadSnapshotPayloads: async () => {
+      await scanBarrier;
+      if (outcome === 'failure') throw new Error('scan failed');
+      return [];
+    } });
+  const cleanup = handlers.cleanup({ scope: 'remote-media', draftUrls: [], zeroRefHashes: [],
+    evictCacheHashes: [record.hash], deadDirNames: [], cleanTmpFiles: false })
+    .then(() => null, error => error);
+  let releaseMetadata!: (value: ReturnType<typeof chatMetadata>) => void;
+  vi.mocked(api).mockReturnValueOnce(new Promise(resolve => { releaseMetadata = resolve; }));
+  const pending = service.download('room', 'media');
+  releaseScan();
+  const cleanupError = await cleanup;
+  if (outcome === 'failure') expect(cleanupError).toBeInstanceOf(Error);
+  else expect(cleanupError).toBeNull();
+  releaseMetadata(chatMetadata());
+  await expect(pending).rejects.toThrow('REMOTE_MEDIA_CACHE_CLEARED');
+  expect(fetchMedia).toHaveBeenCalledTimes(1);
+  expect(await listAllBlobRecords(state.db)).toHaveLength(outcome === 'success' ? 0 : 1);
 });
 
 // PR #7442 review: ordinary attachments have no persistent image index. Two reads of

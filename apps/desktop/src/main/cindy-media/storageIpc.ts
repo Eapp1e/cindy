@@ -297,18 +297,24 @@ export function createStorageIpcHandlers(deps: StorageIpcDeps) {
           const assertCurrent = captureRemoteMediaOwner();
           const db = deps.db ?? getDbClient().drizzle;
           invalidateRemoteMediaPersistentWrites();
-          deps.clearRemoteMediaMemory?.();
-          const live = await collectLive(deps, params.draftUrls ?? []);
-          assertCurrent();
-          const cacheEvicted = await recycler.evictCacheBlobs({
-            hashes: params.evictCacheHashes ?? [], live,
-            integration: REMOTE_MEDIA_INTEGRATION, assertStillValid: assertCurrent,
-          }, db);
-          assertCurrent();
-          deps.clearRemoteMediaMemory?.();
-          return { zeroRef: { deleted: 0, freedBytes: 0, skipped: 0 }, cacheEvicted,
-            deadDirs: { removed: [], skipped: [], freedBytes: 0 }, tmpFilesRemoved: 0,
-            freedBytes: cacheEvicted.freedBytes };
+          try {
+            deps.clearRemoteMediaMemory?.();
+            const live = await collectLive(deps, params.draftUrls ?? []);
+            assertCurrent();
+            const cacheEvicted = await recycler.evictCacheBlobs({
+              hashes: params.evictCacheHashes ?? [], live,
+              integration: REMOTE_MEDIA_INTEGRATION, assertStillValid: assertCurrent,
+            }, db);
+            assertCurrent();
+            return { zeroRef: { deleted: 0, freedBytes: 0, skipped: 0 }, cacheEvicted,
+              deadDirs: { removed: [], skipped: [], freedBytes: 0 }, tmpFilesRemoved: 0,
+              freedBytes: cacheEvicted.freedBytes };
+          } finally {
+            // Reads begun during cleanup may still see indexes that are about to go.
+            // Fence their late results and cached projections even if cleanup fails.
+            invalidateRemoteMediaPersistentWrites();
+            deps.clearRemoteMediaMemory?.();
+          }
         }
         // 执行时重新取证:扫描→确认之间用户可能又粘了图/发了排队消息。
         const live = await collectLive(deps, params.draftUrls ?? []);
