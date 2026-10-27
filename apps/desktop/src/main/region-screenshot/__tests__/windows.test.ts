@@ -55,7 +55,7 @@ vi.mock('../save', () => ({ saveScreenshotImage: vi.fn(), saveRegionRecording: m
 vi.mock('../liveCapture', () => ({ captureLiveRegion: mocks.liveCapture, RegionVideoCapture: class { frame = mocks.liveCapture; stop() {} } }));
 vi.mock('../../i18n', () => ({ getResolvedMainLocale: () => 'en', t: (key: string) => key }));
 vi.mock('../../logger', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn() }) }));
-import { OverlayPool, showScreenshotOverlay } from '../overlays';
+import { OverlayPool, hideScreenshotOverlay, showScreenshotOverlay } from '../overlays';
 import { RegionScreenshotSession } from '../session';
 import { acquireOverlayEscape } from '../../overlayEscape';
 import { closeAllPins, openPin, registerPinIpc } from '../pins';
@@ -144,17 +144,19 @@ describe('screenshot window lifecycle', () => {
     vi.stubGlobal('process', Object.create(process, { platform: { value: platform } }));
     const flag = 'wm-window-animations-disabled';
     if (existing) mocks.switches.add(flag);
-    let disabledDuringShow: boolean | undefined;
-    const window = {
-      showInactive: () => {
-        disabledDuringShow = mocks.switches.has(flag);
+    // 隐藏也必须禁用动画，否则第二次显示仍保留 Aura 的透明层。
+    for (const changeVisibility of [showScreenshotOverlay, hideScreenshotOverlay]) {
+      let disabledDuringChange: boolean | undefined;
+      const change = () => {
+        disabledDuringChange = mocks.switches.has(flag);
         if (throws) throw new Error('window destroyed');
-      },
-    } as BrowserWindow;
-    if (throws) expect(() => showScreenshotOverlay(window)).toThrow('window destroyed');
-    else showScreenshotOverlay(window);
-    expect(disabledDuringShow).toBe(platform === 'win32');
-    expect(mocks.switches.has(flag)).toBe(existing);
+      };
+      const window = { showInactive: change, hide: change } as BrowserWindow;
+      if (throws) expect(() => changeVisibility(window)).toThrow('window destroyed');
+      else changeVisibility(window);
+      expect(disabledDuringChange).toBe(platform === 'win32');
+      expect(mocks.switches.has(flag)).toBe(existing);
+    }
   });
 
   // Phase 5/6: same trusted sender/token contract now guards continuing capture and clip export.

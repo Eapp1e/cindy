@@ -13,15 +13,25 @@ const CRASH_WINDOW_MS = 10 * 60_000;
 
 /** Chromium Aura 的显示动画会缩放整个截图，DWM / thickFrame 开关无法禁用它。 */
 export function showScreenshotOverlay(window: BrowserWindow): void {
+  withoutScreenshotAnimation(() => window.showInactive());
+}
+
+export function hideScreenshotOverlay(window: BrowserWindow): void {
+  withoutScreenshotAnimation(() => window.hide());
+}
+
+function withoutScreenshotAnimation(changeVisibility: () => void): void {
   const flag = 'wm-window-animations-disabled';
   if (process.platform !== 'win32' || app.commandLine.hasSwitch(flag)) {
-    window.showInactive();
+    changeVisibility();
     return;
   }
-  // Aura 在同步 show 调用中读取此开关；立即恢复，不能改变其它窗口的动画策略。
+  // show / hide 必须成对禁用：hide 动画会留下 opacity=0 和缩放变换，
+  // 下次禁用 show 动画时不会恢复，导致复用窗口不可见。
+  // Aura 同步读取此开关；立即恢复，不能改变其它窗口的动画策略。
   app.commandLine.appendSwitch(flag);
   try {
-    window.showInactive();
+    changeVisibility();
   } finally {
     app.commandLine.removeSwitch(flag);
   }

@@ -28,7 +28,7 @@ import {
   type RegionScreenshotBegin,
   type RegionScreenshotWindow,
 } from '../../shared/regionScreenshot';
-import { showScreenshotOverlay, type OverlayPool, type OverlayWindow } from './overlays';
+import { hideScreenshotOverlay, showScreenshotOverlay, type OverlayPool, type OverlayWindow } from './overlays';
 import type { SnapshotHelper, SnapshotWindow } from './snapshotHost';
 
 const log = createLogger('region-screenshot:session');
@@ -317,7 +317,7 @@ export class RegionScreenshotSession {
     this.live = { member, selection, mode: mode as RegionCaptureMode, sampling: false, lastSample: 0, editing: false, layout, automatic: false, target, ignoring: false, previewHeight: layout ? Math.min(layout.preview.height, Math.ceil(croppedSize.height * layout.preview.width / croppedSize.width)) : 0 };
     for (const other of this.members.values()) {
       if (other === member) continue;
-      other.overlay.window.hide();
+      hideScreenshotOverlay(other.overlay.window);
     }
     member.overlay.window.setBounds(bounds, false);
     // Return input focus to the underlying app without closing the capture panel.
@@ -496,7 +496,7 @@ export class RegionScreenshotSession {
       });
       if (!member.overlay.window.isDestroyed()) {
         member.overlay.window.webContents.send(REGION_SCREENSHOT_CHANNEL.END);
-        member.overlay.window.hide();
+        hideScreenshotOverlay(member.overlay.window);
       }
       this.members.delete(id);
     }
@@ -551,7 +551,7 @@ export class RegionScreenshotSession {
       // 页面收到 END 后清空画面与交互态; 窗口先透明再隐藏, 下次显示前不会露出残留。
       window.webContents.send(REGION_SCREENSHOT_CHANNEL.END);
       window.setOpacity(0);
-      window.hide();
+      hideScreenshotOverlay(window);
     }
     this.members.clear();
     this.deps.onClosed();
