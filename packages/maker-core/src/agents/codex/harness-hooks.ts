@@ -7,7 +7,7 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : undefined;
 
-/** Codex 0.159.2's native mcp_tool handler, over the existing Cindy MCP connection.
+/** Codex's native mcp_tool handler, over the existing Cindy MCP connection.
  * No configuration writes or native trust grants occur here.
  */
 export function createCodexHarnessHooks(isCurrent: (threadId: string, turnId: string) => boolean) {
@@ -63,7 +63,7 @@ export function createCodexHarnessHooks(isCurrent: (threadId: string, turnId: st
       const meta = record(metadata);
       const event = args?.event === 'PreToolUse' ? 'preToolUse'
         : args?.event === 'PreCompact' ? 'preCompact' : undefined;
-      // This is a versioned native adapter: ordinary model tool calls carry
+      // Ordinary model tool calls carry
       // callId/itemId/turn metadata and must never impersonate a native Hook.
       if (closed || !event || typeof args?.session !== 'string' || typeof args.turn !== 'string' ||
           meta?.threadId !== args.session ||

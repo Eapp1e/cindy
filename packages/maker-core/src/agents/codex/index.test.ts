@@ -2003,6 +2003,87 @@ async function nextEvent(iterator: AsyncIterator<AgentEvent>): Promise<AgentEven
   return result.value;
 }
 
+describe('Codex native Harness capability bridge', () => {
+  const configuredHooks = ['preToolUse', 'preCompact'].map(eventName => ({
+    eventName, handlerType: 'mcpTool', server: 'cindy', tool: 'harness_hook',
+    enabled: true, trustStatus: 'trusted',
+  }));
+
+  // Regression for #6910: startSession must route the native protocol even when
+  // initialize reports a newer or unknown version. Unit tier; no native process.
+  it.each(['test-codex/0.159.2', 'test-codex/0.164.0', 'test-codex/unknown'])(
+    'delivers native Hook requests and verdicts with %s', async userAgent => {
+      const register = vi.fn<NonNullable<AgentDeps['registerCodexMcpThreadContext']>>();
+      const agent = new CodexAgent(createDeps({}, { registerCodexMcpThreadContext: register }));
+      const host = installFakeHost(agent, method => {
+        if (method === Method.ConfigRead) return { config: { features: { hooks: true } } };
+        if (method === 'hooks/list') return { data: [{ hooks: configuredHooks }] };
+        if (method === Method.McpServerStatusList) return {
+          data: [{ name: 'cindy', tools: { harness_hook: {} } }], nextCursor: null,
+        };
+        if (method === Method.TurnStart) return { turn: { id: 'hook-turn' } };
+        if (method === Method.TurnInterrupt) return {};
+      }, { userAgent });
+      const handle = await agent.startSession({
+        sessionId: 'harness-hooks', sessionInstanceId: 'hook-instance', workingDir: '/repo', model: 'gpt-5.4',
+      });
+      try {
+        expect(handle.harnessHooks).toEqual(['tool.before', 'compaction.before']);
+        const dispatch = vi.fn(async () => ({ action: 'continue' as const }));
+        handle.setHarnessHookHandler!(dispatch);
+        const nativeHook = register.mock.calls.find(([ctx]) => ctx.mcpCallerKind === 'root')![0].nativeHarnessHook!;
+        await handle.send({ type: 'user', content: 'inspect' });
+        const handlers = host.getThreadHandlers()!;
+        handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'hook-turn' } });
+        for (const [eventName, event, verdict] of [
+          ['preToolUse', 'PreToolUse', {}],
+          ['preCompact', 'PreCompact', { continue: true }],
+        ] as const) {
+          handlers.hookStarted?.({ threadId: 'start-thread-id', turnId: 'hook-turn', run: {
+            id: eventName, eventName, handlerType: 'mcpTool', executionMode: 'sync', status: 'running',
+          } });
+          await expect(nativeHook({ event, session: 'start-thread-id', turn: 'hook-turn',
+            tool_name: 'exec_command', tool_use_id: 'tool-use', tool_input: { cmd: 'pwd' },
+          }, { threadId: 'start-thread-id' })).resolves.toEqual(verdict);
+        }
+        expect(dispatch.mock.calls).toEqual([
+          [{ name: 'tool.before', toolName: 'exec_command', toolUseId: 'tool-use', input: { cmd: 'pwd' } }],
+          [{ name: 'compaction.before' }],
+        ]);
+        handlers.turnCompleted?.({ threadId: 'start-thread-id', turn: { id: 'hook-turn', status: 'completed', items: [] } });
+      } finally {
+        await handle.close();
+        await agent.dispose();
+      }
+    },
+  );
+
+  it.each(['disabled', 'untrusted', 'unreachable', 'unsupported'])(
+    'does not advertise native Hooks when %s on a newer runtime', async state => {
+      const agent = new CodexAgent(createDeps({}, { registerCodexMcpThreadContext: vi.fn() }));
+      installFakeHost(agent, method => {
+        if (method === Method.ConfigRead) return { config: { features: { hooks: state !== 'disabled' } } };
+        if (method === 'hooks/list') {
+          if (state === 'unsupported') throw Object.assign(new Error('Method not found'), { code: -32601 });
+          return { data: [{ hooks: configuredHooks.map(hook => ({
+            ...hook, trustStatus: state === 'untrusted' ? 'modified' : hook.trustStatus,
+          })) }] };
+        }
+        if (method === Method.McpServerStatusList) return { data: [], nextCursor: null };
+      }, { userAgent: 'test-codex/0.164.0' });
+      const handle = await agent.startSession({
+        sessionId: 'harness-not-ready', sessionInstanceId: 'not-ready-instance', workingDir: '/repo', model: 'gpt-5.4',
+      });
+      try {
+        expect(handle.harnessHooks).toEqual([]);
+      } finally {
+        await handle.close();
+        await agent.dispose();
+      }
+    },
+  );
+});
+
 describe('Codex native compaction action bridge', () => {
   // Desktop PreCompact block ends the native turn as interrupted, without a
   // boundary. Unit regression: report noop, retain real failures, release the lane.
@@ -2037,12 +2118,14 @@ describe('Codex native compaction action bridge', () => {
     }
   });
 
-  it('waits for the native terminal and keeps control completion outside the product turn', async () => {
+  it.each([
+    'test-codex/0.159.2', 'test-codex/0.164.0', 'test-codex/unknown',
+  ])('waits for the native terminal and keeps control completion outside the product turn (%s)', async userAgent => {
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent, method => {
       if (method === Method.ConfigRead) return { config: { features: { hooks: false } }, layers: [] };
       if (method === 'thread/compact/start') return {};
-    }, { userAgent: 'test-codex/0.159.2' });
+    }, { userAgent });
     const handle = await agent.startSession({ sessionId: 'harness-compact', workingDir: '/repo', model: 'gpt-5.4' });
     const events: AgentEvent[] = [];
     const collect = (async () => { for await (const event of handle.events()) events.push(event); })();
@@ -2071,6 +2154,28 @@ describe('Codex native compaction action bridge', () => {
     }
     expect(events.some(event => event.type === 'compact_boundary')).toBe(true);
     expect(events.some(event => event.type === 'done')).toBe(false);
+  });
+
+  it.each([
+    { failure: 'native rejection', code: -32601, running: false },
+    { failure: 'lost acknowledgement', code: undefined, running: true },
+  ])('preserves $failure without replaying compaction on a newer runtime', async ({ failure, code, running }) => {
+    const agent = new CodexAgent(createDeps());
+    const error = Object.assign(new Error(failure), { code });
+    const host = installFakeHost(agent, method => {
+      if (method === 'thread/compact/start') throw error;
+      if (method === Method.TurnInterrupt) return {};
+    }, { userAgent: 'test-codex/0.164.0' });
+    const handle = await agent.startSession({ sessionId: 'harness-rejected', workingDir: '/repo', model: 'gpt-5.4' });
+    try {
+      await expect(handle.requestHarnessCompaction!()).rejects.toBe(error);
+      expect(handle.isTurnRunning?.()).toBe(running);
+      if (running) await expect(handle.requestHarnessCompaction!()).rejects.toThrow('SESSION_RUNNING');
+      expect(host.request.mock.calls.filter(([method]) => method === 'thread/compact/start')).toHaveLength(1);
+    } finally {
+      await handle.close();
+      await agent.dispose();
+    }
   });
 });
 

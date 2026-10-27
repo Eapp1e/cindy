@@ -69,9 +69,11 @@ cindy.onHostMessage(msg => {
 
 声明且获准的 Hook 默认接入，以兼容已有 permission.request；enabled 覆盖当前实例的开关，实例替换后失效。permission.request 连接宿主实际审批，不覆盖免审批工具。tool.before / compaction.before 在 Claude 使用 SDK 的 PreToolUse / PreCompact，在 Pi 使用 tool_call / session_before_compact。仅映射原生 continue/block，不新增拦截语义，也不把事后通知当作前置决策。
 
-原生适配限本机普通主任务，Review、托管和 SSH 不接入插件原生 Hook。Codex 0.159.2 使用原生 mcp_tool handler 调用既有 cindy MCP 服务的 harness_hook；不创建转发脚本或另一套 HTTP 服务，不修改原生配置、计算哈希或授予信任。适配同时校验当前根线程/回合、原生 hook/started 回执及原生 MCP 请求元数据，普通模型调用、子线程、重复或旧回执不能分派插件 Hook。PreToolUse 的阻止映射为原生 permissionDecision=deny，继续返回空对象；PreCompact 的阻止映射为 continue=false。两者不能混用返回格式。
+原生适配限本机普通主任务，Review、托管和 SSH 不接入插件原生 Hook。Codex 使用原生 mcp_tool handler 调用既有 cindy MCP 服务的 harness_hook；不创建转发脚本或另一套 HTTP 服务，不修改原生配置、计算哈希或授予信任。适配同时校验当前根线程/回合、原生 hook/started 回执及原生 MCP 请求元数据，普通模型调用、子线程、重复或旧回执不能分派插件 Hook。PreToolUse 的阻止映射为原生 permissionDecision=deny，继续返回空对象；PreCompact 的阻止映射为 continue=false。两者不能混用返回格式。
 
 Codex 必须在实际使用的原生配置中启用并信任对应定义；安装批准插件不代表已取得原生 Hook 信任。连接状态还检查当前线程的 MCP 工具是否可用，启动尚未完成时也可由真实原生回调确认就绪。原生关闭、未配置、未信任或回调尚不可达时不报告 connected，插件启用请求返回 UNAVAILABLE。原生配置变化在重新创建任务运行实例后重新读取；本次不增加配置/信任确认 UI。原生 mcp_tool 出错会 fail open，不可充当全部工具执行的强制安全边界。
+
+Codex 的运行版本仅作诊断信息，不按精确版本白名单关闭 Hook 或手动压缩入口。Hook 接通依据上述原生配置、信任和回执；版本未知也按同样流程处理。未取得有效原生连接证据时不声称已连接，不自动配置或补造信任。
 
 内部 harness_hook 是 Codex 的固定 MCP 工具，工具目录会相对旧版本增加一项；它不随插件数量、订阅或每轮状态变化。普通模型调用只能得到 NATIVE_HOOK_UNAVAILABLE。不能用 disabled_tools 隐藏该工具，因为原生 Hook 也会因此失效。Claude/Pi 的工具目录不因此增加此项；是否影响缓存与成本仍需测量。
 
@@ -107,7 +109,7 @@ await cindy.harness({ kind: 'action', name: 'turn.interrupt', sessionId, runtime
 // name:'context.compact' 请求原生手动压缩。
 ```
 
-两个动作分别批准，必须绑定最新 runtimeId 和目标 turnGeneration。重复 requestId 不重复发起；同 ID 改目标会被拒绝。先查 actions/availability：中断复用 Session.abort；context.compact 转发原生手动压缩，Claude 走现有 Query 的 /compact，Codex 0.159.2 走 thread/compact/start，Pi 走现有 compact RPC。Cindy 仅关联请求及原生终态，摘要、历史更新、后台预计算与自动压缩协调由原生负责，不另建压缩调度器。
+两个动作分别批准，必须绑定最新 runtimeId 和目标 turnGeneration。重复 requestId 不重复发起；同 ID 改目标会被拒绝。先查 actions/availability：中断复用 Session.abort；context.compact 转发原生手动压缩，Claude 走现有 Query 的 /compact，Codex 走 thread/compact/start，Pi 走现有 compact RPC。Cindy 仅关联请求及原生终态，摘要、历史更新、后台预计算与自动压缩协调由原生负责，不另建压缩调度器。仅在显式动作请求时调用原生压缩，不以实际压缩作为能力探测；原生明确拒绝时沿现有失败通道返回。
 
 压缩要求空闲且无未结执行或审批，忙时返回 BUSY；Session 同步保留动作边界，期间用户发送不抢跑。动作最多等待 10 秒，超时或连接错误可能返回 `outcome:'unknown'`，底层不自动重放，插件也不能换 ID 自动重试。中断返回 requested 仅是请求已返回，应继续观察原生终态；压缩返回原生结果（可能 noop）。每个执行代次最多保留 128 个操作身份，达到上限返回 BUSY。
 

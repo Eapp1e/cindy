@@ -6011,7 +6011,7 @@ assertRouteCurrent();
     }
 
     const nativeHarnessHooks = !reviewMode && !hosted && !opts.remoteHostId && opts.sessionInstanceId &&
-      this.deps.registerCodexMcpThreadContext && host.getNativeRuntimeVersion?.() === '0.159.2'
+      this.deps.registerCodexMcpThreadContext
       ? createCodexHarnessHooks((nativeThreadId, nativeTurnId) =>
         !closed && !sessionHostForceRetired && !subscriptionInvalidatedByTransport && isCurrentHost() &&
         threadId === nativeThreadId && currentTurnId === nativeTurnId)
@@ -13375,15 +13375,14 @@ assertRouteCurrent();
       get runtimeVersion() { return host.getNativeRuntimeVersion?.() ?? undefined; },
       get harnessHooks() { return nativeHarnessHooks?.names ?? []; },
       ...(nativeHarnessHooks ? { setHarnessHookHandler: nativeHarnessHooks.setHandler } : {}),
-      ...(!reviewMode && !hosted && !opts.remoteHostId && host.getNativeRuntimeVersion?.() === '0.159.2' ? {
+      ...(!reviewMode && !hosted && !opts.remoteHostId ? {
         requestHarnessCompaction: async () => {
           if (closed || sessionHostForceRetired || subscriptionInvalidatedByTransport || harnessCompaction ||
               isTurnInFlight || isTurnStartPending || currentTurnId || turnStartFailedWithoutTurnId ||
               overloadRetryPending() || yieldContinuationInFlight || interactionContinuation) {
             throw new Error('SESSION_RUNNING: Codex is not idle for compaction');
           }
-          // In 0.159.2 automatic compaction runs inside the active native turn.
-          // Reserve its existing task lane before the one control dispatch.
+          // Reserve the existing task lane before the one native control dispatch.
           let resolveCompletion!: (value: { noop?: boolean }) => void;
           let rejectCompletion!: (error: Error) => void;
           const completion = new Promise<{ noop?: boolean }>((resolve, reject) => {
