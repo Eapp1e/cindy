@@ -3458,6 +3458,45 @@ describe('thread previews and posting to the main chat', () => {
     expect(within(panel).queryByText('Latest reply')).toBeNull();
   });
 
+  // Unit, PR #7396: topic pagination was tested for history resets, but not failure
+  // snapshots overtaken by a latest-page refresh. Newly added replies still need
+  // their own notices, without restoring a cleared notice on an already shown source.
+  it('keeps failures for newly loaded topic replies when a newer refresh overtakes pagination', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const root = msg({ id: 'u1', content: 'Root' });
+    const latest = msg({ id: 'r100', sequence: 100, content: 'Latest reply' });
+    const older = msg({ id: 'r50', sequence: 50, content: 'Earlier reply' });
+    const failure = (source: string, name: string) => ({ executionId: `failure-${source}`, epoch: 1,
+      sourceMessageId: source, botId: name, botName: name, code: 'AUTH_REQUIRED' as const, planId: null });
+    const rootFailure = failure(root.id, 'Root bot');
+    const latestFailure = failure(latest.id, 'Latest bot');
+    const olderFailure = failure(older.id, 'Earlier bot');
+    const page = { ok: true, historyRevision: 'topic-failures', root, replies: [latest], hasMore: true };
+    let finishOlder!: (value: unknown) => void;
+    let finishRecheck!: (value: unknown) => void;
+    mocks.thread.mockResolvedValueOnce({ ...page, executionFailures: [rootFailure] })
+      .mockImplementationOnce(() => new Promise(resolve => { finishOlder = resolve; }))
+      .mockResolvedValueOnce({ ...page, executionFailures: [latestFailure] })
+      .mockImplementation(() => new Promise(resolve => { finishRecheck = resolve; }));
+    const user = userEvent.setup(); renderView();
+    await user.click((await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!);
+    const panel = screen.getByRole('complementary');
+    await within(panel).findByText('Latest reply');
+    await user.click(within(panel).getByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await within(panel).findByText('bots.groupChat.notice.runtimeFailure.AUTH_REQUIRED:Latest bot');
+    await act(async () => finishOlder({ ...page, replies: [older], executionFailures: [olderFailure, rootFailure] }));
+    expect(within(panel).getByText('Earlier reply')).toBeTruthy();
+    expect(within(panel).getByText('bots.groupChat.notice.runtimeFailure.AUTH_REQUIRED:Earlier bot')).toBeTruthy();
+    expect(within(panel).getByText('bots.groupChat.notice.runtimeFailure.AUTH_REQUIRED:Latest bot')).toBeTruthy();
+    expect(within(panel).queryByText('bots.groupChat.notice.runtimeFailure.AUTH_REQUIRED:Root bot')).toBeNull();
+    expect(mocks.thread.mock.calls.at(-1)?.[0].sourceMessageIds).toContain(older.id);
+    // The extra reconciliation is scoped to newly visible sources and can clear their old notice.
+    await act(async () => finishRecheck({ ...page, executionFailures: [latestFailure] }));
+    expect(within(panel).queryByText('bots.groupChat.notice.runtimeFailure.AUTH_REQUIRED:Earlier bot')).toBeNull();
+    expect(within(panel).getByText('Earlier reply')).toBeTruthy();
+  });
+
   // Unit: a reset discovered by pagination must clear even the latest page while
   // its replacement is in flight, instead of displaying a mixed history window.
   it('clears the topic window when an older page first discovers a history reset', async () => {

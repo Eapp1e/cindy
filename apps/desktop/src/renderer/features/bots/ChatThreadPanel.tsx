@@ -222,6 +222,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const aliveRef = useRef(true);
   const inFlightRef = useRef(false);
   const queuedRef = useRef(false);
+  const queuedSourcesRef = useRef(new Set<string>());
 
   /** Lowest sequence of the last latest-page read; replies below it live only on opened older pages. */
   const latestFloorRef = useRef(Number.POSITIVE_INFINITY);
@@ -243,6 +244,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
 
   const clearHistory = useCallback(() => {
     historyEpochRef.current++;
+    queuedSourcesRef.current.clear();
     for (const key of windows().keys()) if (key.startsWith(`${group.id}:`)) windows().delete(key);
     repliesRef.current = [];
     setReplies([]); setRoot(null); setExecutionFailures([]); setHasMore(false);
@@ -260,6 +262,10 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     const latestRead = latestReadRef.current;
     const current = () => aliveRef.current && isDataOwnerGenerationCurrent(owner) && epoch === historyEpochRef.current;
     const shown = repliesRef.current;
+    // A page can land before React commits its rows. Keep those sources explicit
+    // so the coalesced refresh also validates their execution state.
+    const extraSources = before ? [] : [...queuedSourcesRef.current];
+    if (!before) queuedSourcesRef.current.clear();
     // An older page belongs below the reply it was read from; a latest page that started over
     // meanwhile dropped that reply, and the page would sit under the new one with the gap still in it.
     const anchorId = before ? shown[0]?.id : undefined;
@@ -270,7 +276,8 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       const markRead = !before && stickToBottomRef.current;
       const save = followSave(followKey);
       const followWrites = save.writes;
-      const result = await api().thread({ groupId: group.id, rootId, before, sourceMessageIds: shown.map(message => message.id), markRead });
+      const result = await api().thread({ groupId: group.id, rootId, before,
+        sourceMessageIds: [...new Set([...shown.map(message => message.id), ...extraSources])], markRead });
       if (!current()) return;
       if (!result.ok) {
         if (threadAccessLost(result.errorCode)) clearHistory();
@@ -296,13 +303,19 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       }
       if (!stalePage) setRoot(previous => (previous && JSON.stringify(previous) === JSON.stringify(result.root) ? previous : result.root));
       setError('');
-      if (!stalePage) setExecutionFailures(result.executionFailures ?? []);
       const floor = result.replies.reduce((min, reply) => Math.min(min, reply.sequence), Number.POSITIVE_INFINITY);
       // A latest page that neither overlaps nor directly adjoins the shown replies may leave a gap:
       // start over from it, as on first load, so 「查看更早」 reads on from right below it.
       const gap = !before && result.hasMore && result.replies.length > 0 && shown.length > 0
         && floor > shown.reduce((max, reply) => Math.max(max, reply.sequence), Number.NEGATIVE_INFINITY) + 1;
       if (!reset && !anchored(repliesRef.current)) return;
+      const addedSources = new Set(stalePage
+        ? result.replies.filter(reply => !repliesRef.current.some(shown => shown.id === reply.id)).map(reply => reply.id) : []);
+      if (!stalePage) setExecutionFailures(result.executionFailures ?? []);
+      else if (addedSources.size) setExecutionFailures(previous => [
+        ...previous.filter(failure => !addedSources.has(failure.sourceMessageId)),
+        ...(result.executionFailures ?? []).filter(failure => addedSources.has(failure.sourceMessageId)),
+      ]);
       onAccepted?.();
       setReplies(previous => {
         if (reset || gap) return result.replies;
@@ -313,6 +326,10 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       });
       if (!before) latestFloorRef.current = floor;
       if (!rereadOnly && (before || shown.length === 0 || gap || reset)) setHasMore(result.hasMore);
+      if (addedSources.size) {
+        for (const id of addedSources) queuedSourcesRef.current.add(id);
+        refreshRef.current();
+      }
       // A refresh reads only the latest page: replies on opened older pages keep the attachments they
       // arrived with, so re-read the pages whose attachments were not here yet.
       if (!before && !gap && !reset && result.replies.length > 0) {
