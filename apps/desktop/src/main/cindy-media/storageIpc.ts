@@ -28,7 +28,7 @@ import * as legacyDeadDirs from './legacyDeadDirs';
 import type { FixedDirectoryStats } from './fixedDirectory';
 import type { LiveHashSources } from './recycler';
 import { getDbClient } from '../localDb/client/current';
-import { captureRemoteMediaOwner, invalidateRemoteMediaPersistentWrites, REMOTE_MEDIA_INTEGRATION } from '../device-link/remoteMediaPersistentCache';
+import { beginRemoteMediaCacheCleanup, captureRemoteMediaOwner, REMOTE_MEDIA_INTEGRATION } from '../device-link/remoteMediaPersistentCache';
 
 const log = createLogger('cindy-media-storage-ipc');
 
@@ -296,7 +296,7 @@ export function createStorageIpcHandlers(deps: StorageIpcDeps) {
         if (params.scope === 'remote-media') {
           const assertCurrent = captureRemoteMediaOwner();
           const db = deps.db ?? getDbClient().drizzle;
-          invalidateRemoteMediaPersistentWrites();
+          const finishCleanup = beginRemoteMediaCacheCleanup();
           try {
             deps.clearRemoteMediaMemory?.();
             const live = await collectLive(deps, params.draftUrls ?? []);
@@ -310,9 +310,8 @@ export function createStorageIpcHandlers(deps: StorageIpcDeps) {
               deadDirs: { removed: [], skipped: [], freedBytes: 0 }, tmpFilesRemoved: 0,
               freedBytes: cacheEvicted.freedBytes };
           } finally {
-            // Reads begun during cleanup may still see indexes that are about to go.
-            // Fence their late results and cached projections even if cleanup fails.
-            invalidateRemoteMediaPersistentWrites();
+            // Release this cleanup's fence and invalidate old projections even on failure.
+            finishCleanup();
             deps.clearRemoteMediaMemory?.();
           }
         }

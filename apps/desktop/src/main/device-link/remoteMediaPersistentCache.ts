@@ -11,8 +11,21 @@ import { captureDataOwnerBroadcastScope, isDataOwnerBroadcastScopeCurrent } from
 
 export const REMOTE_MEDIA_INTEGRATION = 'remote-media';
 let cacheGeneration = 0;
+let activeCleanups = 0;
 export function invalidateRemoteMediaPersistentWrites(): void {
   cacheGeneration++;
+}
+/** Keep reads/writes fenced until every overlapping cleanup has finished. */
+export function beginRemoteMediaCacheCleanup(): () => void {
+  activeCleanups++;
+  invalidateRemoteMediaPersistentWrites();
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    activeCleanups--;
+    invalidateRemoteMediaPersistentWrites();
+  };
 }
 export function remoteMediaCacheGeneration(): number {
   return cacheGeneration;
@@ -30,7 +43,7 @@ export function captureRemoteMediaCacheValidity(): () => void {
   const generation = cacheGeneration;
   return () => {
     assertOwner();
-    if (generation !== cacheGeneration) throw new Error('REMOTE_MEDIA_CACHE_CLEARED');
+    if (activeCleanups > 0 || generation !== cacheGeneration) throw new Error('REMOTE_MEDIA_CACHE_CLEARED');
   };
 }
 

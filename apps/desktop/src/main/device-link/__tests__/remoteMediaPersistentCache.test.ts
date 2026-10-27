@@ -33,6 +33,7 @@ vi.mock('../broadcast-tap', () => ({
 import * as schema from '../../localDb/schema';
 import { listAllBlobRecords, listCacheBlobsByLru } from '../../cindy-media/ledger';
 import { resolveHashRef } from '../../cindy-media/blobStore';
+import * as blobStore from '../../cindy-media/blobStore';
 import { evictCacheBlobs, scanCache } from '../../cindy-media/recycler';
 import { createStorageIpcHandlers } from '../../cindy-media/storageIpc';
 import {
@@ -181,6 +182,46 @@ it.each(['success', 'failure'] as const)('rejects an image lookup started during
   await expect(pending).rejects.toThrow('REMOTE_MEDIA_CACHE_CLEARED');
   expect(fetchMedia).toHaveBeenCalledTimes(1);
   expect(await listAllBlobRecords(state.db)).toHaveLength(outcome === 'success' ? 0 : 1);
+});
+
+// PR #7442: end-generation invalidation misses writes committed during a multi-blob
+// clear. Unit regression: pause real cleanup after deleting its first file, complete
+// another cleanup, then try both the Chat Server read and the persistent put entry.
+it('fences reads and writes until every overlapping cleanup finishes', async () => {
+  const service = createChatMedia(vi.fn(async () => chatMetadata()) as unknown as ChatApi, () => true, chatEndpoint);
+  await service.download('room', 'media');
+  const [first] = await listAllBlobRecords(state.db);
+  const secondBytes = Buffer.concat([png, Buffer.from([1])]);
+  const secondHash = createHash('sha256').update(secondBytes).digest('hex');
+  const secondUrl = `cindy-media://blobs/${secondHash}.png`;
+  await remoteMediaPersistentCache('computer', secondUrl)!.put(secondBytes, 'image/png');
+  let deletedFirst!: () => void;
+  const firstDeleted = new Promise<void>(resolve => { deletedFirst = resolve; });
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const deleteFile = blobStore.deleteBlobFile;
+  const deleting = vi.spyOn(blobStore, 'deleteBlobFile').mockImplementation(async (...args) => {
+    await deleteFile(...args);
+    if (args[0] === first.hash) { deletedFirst(); await barrier; }
+  });
+  const handlers = createStorageIpcHandlers({ db: state.db, getQueueScanTexts: () => [], loadSnapshotPayloads: async () => [] });
+  const params = { scope: 'remote-media' as const, draftUrls: [], zeroRefHashes: [],
+    evictCacheHashes: [first.hash, secondHash], deadDirNames: [], cleanTmpFiles: false };
+  const cleanup = handlers.cleanup(params);
+  try {
+    await firstDeleted;
+    await handlers.cleanup({ ...params, evictCacheHashes: [] });
+    await expect(service.download('room', 'media')).rejects.toThrow('REMOTE_MEDIA_CACHE_CLEARED');
+    await expect(remoteMediaPersistentCache('computer', url)!.put(png, 'image/png'))
+      .rejects.toThrow('REMOTE_MEDIA_CACHE_CLEARED');
+    expect(fetchMedia).toHaveBeenCalledTimes(1);
+  } finally {
+    release();
+    await cleanup.finally(() => deleting.mockRestore());
+  }
+  expect(await listAllBlobRecords(state.db)).toEqual([]);
+  expect((await service.download('room', 'media')).url).toBe(url);
+  expect(fetchMedia).toHaveBeenCalledTimes(2);
 });
 
 // PR #7442 review: ordinary attachments have no persistent image index. Two reads of

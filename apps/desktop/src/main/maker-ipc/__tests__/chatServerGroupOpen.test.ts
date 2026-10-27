@@ -542,6 +542,24 @@ describe('Chat Server group open latency (simulated 100ms per request)', () => {
     expect(fixture.download).toHaveBeenCalledTimes(2);
   });
 
+  // Unit: cleanup-fenced reads must recover at cleanup completion, not wait 30s.
+  // Existing timing coverage only changes generation before a download settles.
+  it('retries an image rejected during cleanup as soon as its generation changes', async () => {
+    const mediaId = '60000000-0000-4000-8000-000000000201';
+    fixture.page = [{ ...message, content: [{ type: 'media', mediaId }] }];
+    fixture.download.mockRejectedValueOnce(new Error('REMOTE_MEDIA_CACHE_CLEARED'))
+      .mockResolvedValue({ id: mediaId, name: 'image.png', category: 'image', path: null,
+        url: `cindy-media://blobs/${'a'.repeat(64)}.png` });
+    await timed(() => service.getGroup(rooms[0]));
+    await timed(() => service.getGroup(rooms[0]));
+    expect(fixture.download).toHaveBeenCalledTimes(1);
+    fixture.cacheGeneration++;
+    await timed(() => service.getGroup(rooms[0]));
+    const loaded = await timed(() => service.getGroup(rooms[0]));
+    expect(loaded.value.ok && loaded.value.group.messages[0].attachments[0].url).toContain('a'.repeat(64));
+    expect(fixture.download).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps attachment order, failures and a later retry when completions share one re-read', async () => {
     const ids = ['60000000-0000-4000-8000-000000000201', '60000000-0000-4000-8000-000000000202', '60000000-0000-4000-8000-000000000203'];
     fixture.page = [{ ...message, content: [{ type: 'text', text: 'three files' }, ...ids.map(mediaId => ({ type: 'media', mediaId }))] }];
