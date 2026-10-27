@@ -13,7 +13,8 @@ the repository's actual `stargazers_count`, including decreases.
 ## Updating
 
 The `README star history` workflow runs every six hours at 01:23, 07:23, 13:23,
-and 19:23 UTC (03:23, 09:23, 15:23, and 21:23 Shanghai), manually, and when its
+and 19:23 UTC (respectively 09:23, 15:23, 21:23, and 03:23 the following day
+in Shanghai, UTC+8), manually, and when its
 generator/seed/workflow changes on main. GitHub may delay
 scheduled runs; image caching can also delay their appearance. The schedule
 becomes active after merge. The workflow needs only the built-in `GITHUB_TOKEN`
