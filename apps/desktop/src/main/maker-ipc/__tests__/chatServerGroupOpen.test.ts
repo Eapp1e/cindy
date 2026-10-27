@@ -483,22 +483,62 @@ describe('Chat Server group open latency (simulated 100ms per request)', () => {
 
   // Unit regression: getGroup kept an image's now-deleted local URL forever after manual
   // cleanup. Existing attachment tests only retried failed transfers, not successful copies
-  // invalidated by cleanup. Minimum input: one loaded image and a cache-generation change.
-  it('reloads image attachments after their dedicated cache is cleared', async () => {
+  // invalidated by cleanup. Minimum input: one image, one PDF and a cache-generation change.
+  it('reloads only image attachments after their dedicated cache is cleared', async () => {
     const mediaId = '60000000-0000-4000-8000-000000000201';
-    fixture.page = [{ ...message, content: [{ type: 'media', mediaId }] }];
-    fixture.download.mockResolvedValue({ id: mediaId, name: 'image.png', category: 'image', path: null,
-      url: `cindy-media://blobs/${'a'.repeat(64)}.png` });
+    const fileId = '60000000-0000-4000-8000-000000000202';
+    const file = { id: fileId, name: 'report.pdf', category: 'file', path: '/test/report.pdf', url: null };
+    fixture.page = [{ ...message, content: [mediaId, fileId].map(mediaId => ({ type: 'media', mediaId })) }];
+    let hash = 'a';
+    fixture.download.mockImplementation(async (_room: string, id: string) => id === fileId ? file
+      : { id, name: 'image.png', category: 'image', path: null, url: `cindy-media://blobs/${hash.repeat(64)}.png` });
     await timed(() => service.getGroup(rooms[0]));
     const loaded = await timed(() => service.getGroup(rooms[0]));
     expect(loaded.value.ok && loaded.value.group.messages[0].attachments[0].url).toContain('a'.repeat(64));
-    expect(fixture.download).toHaveBeenCalledTimes(1);
+    expect(fixture.download).toHaveBeenCalledTimes(2);
     fixture.cacheGeneration++;
-    fixture.download.mockResolvedValue({ id: mediaId, name: 'image.png', category: 'image', path: null,
-      url: `cindy-media://blobs/${'b'.repeat(64)}.png` });
+    hash = 'b';
     await timed(() => service.getGroup(rooms[0]));
     const reloaded = await timed(() => service.getGroup(rooms[0]));
     expect(reloaded.value.ok && reloaded.value.group.messages[0].attachments[0].url).toContain('b'.repeat(64));
+    expect(reloaded.value.ok && reloaded.value.group.messages[0].attachments[1]).toEqual(file);
+    expect(fixture.download.mock.calls.map(([, id]) => id)).toEqual([mediaId, fileId, mediaId]);
+  });
+
+  // PR #7442: cleanup must not duplicate or discard a pending ordinary file transfer.
+  // Unit, minimum input: one PDF still downloading when the image generation changes.
+  it('keeps a pending ordinary attachment projection across image cleanup', async () => {
+    const mediaId = '60000000-0000-4000-8000-000000000202';
+    const file = { id: mediaId, name: 'report.pdf', category: 'file', path: '/test/report.pdf', url: null };
+    let complete!: (value: typeof file) => void;
+    fixture.download.mockReturnValue(new Promise<typeof file>(resolve => { complete = resolve; }));
+    fixture.page = [{ ...message, content: [{ type: 'media', mediaId }] }];
+    await timed(() => service.getGroup(rooms[0]));
+    fixture.cacheGeneration++;
+    await timed(() => service.getGroup(rooms[0]));
+    expect(fixture.download).toHaveBeenCalledTimes(1);
+    complete(file);
+    const loaded = await timed(() => service.getGroup(rooms[0]));
+    expect(loaded.value.ok && loaded.value.group.messages[0].attachments[0]).toEqual(file);
+  });
+
+  // Unit timing regression: preserving pending files must not retain a late image URL.
+  // Existing settled-image coverage cannot exercise cleanup before download completion.
+  it('retries a pending image immediately when it completes after cleanup', async () => {
+    const mediaId = '60000000-0000-4000-8000-000000000201';
+    const image = { id: mediaId, name: 'image.png', category: 'image', path: null,
+      url: `cindy-media://blobs/${'a'.repeat(64)}.png` };
+    let complete!: (value: typeof image) => void;
+    fixture.download.mockReturnValueOnce(new Promise<typeof image>(resolve => { complete = resolve; }))
+      .mockResolvedValue({ ...image, url: `cindy-media://blobs/${'b'.repeat(64)}.png` });
+    fixture.page = [{ ...message, content: [{ type: 'media', mediaId }] }];
+    await timed(() => service.getGroup(rooms[0]));
+    fixture.cacheGeneration++;
+    complete(image);
+    const retrying = await timed(() => service.getGroup(rooms[0]));
+    expect(retrying.value.ok && retrying.value.group.messages[0].attachments[0].url).not.toBe(image.url);
+    const loaded = await timed(() => service.getGroup(rooms[0]));
+    expect(loaded.value.ok && loaded.value.group.messages[0].attachments[0].url).toContain('b'.repeat(64));
     expect(fixture.download).toHaveBeenCalledTimes(2);
   });
 

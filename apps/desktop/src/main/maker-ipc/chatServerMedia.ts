@@ -28,7 +28,7 @@ const MAX_SIZE = 100 * 1024 * 1024;
 /** Files of one send uploaded at once; each holds its bytes in memory until sealed. */
 const UPLOAD_CONCURRENCY = 3;
 export function createChatMedia(api: ChatApi, current: () => boolean, endpoint: string, log?: { warn(message: string, meta?: Record<string, unknown>): void }, options: { allowLoopback?: boolean } = {}) {
-  // Coalesce in-flight transfers only; settled images are indexed in the media ledger.
+  // Images keep only in-flight transfers here; ordinary files retain service-local reuse.
   const cache = new Map<string, Promise<BotGroupAttachment>>();
   const check = () => { if (!current()) throw new Error('OWNER_CHANGED'); };
   const signedUrl = (value: string) => {
@@ -122,18 +122,19 @@ export function createChatMedia(api: ChatApi, current: () => boolean, endpoint: 
       check();
       const generation = remoteMediaCacheGeneration();
       const assertCacheCurrent = captureRemoteMediaCacheValidity();
-      const checkDownload = () => { check(); assertCacheCurrent(); };
-      const persistent = chatMediaPersistentCache(endpoint, roomId, mediaId, checkDownload);
       // Authorization is checked for each projection, even when bytes are cached.
       const media = await api<{ name: string; type: string; size: string | number; url: string }>(`/conversations/${roomId}/media/${mediaId}`);
+      check();
+      const isImage = media.type.startsWith('image/') && supportedMime(media.type);
+      const checkDownload = () => { check(); if (isImage) assertCacheCurrent(); };
       checkDownload();
-      const key = JSON.stringify([roomId, mediaId, generation]);
+      const persistent = isImage ? chatMediaPersistentCache(endpoint, roomId, mediaId, checkDownload) : null;
+      const key = JSON.stringify([roomId, mediaId, isImage ? generation : null]);
       if (!cache.has(key)) cache.set(key, (async () => {
         const size = Number(media.size);
         if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_SIZE) throw new Error('INVALID_MEDIA_SIZE');
         const root = ownerScopedUserDataPath();
         const base = { id: mediaId, name: media.name, mimeType: media.type, size };
-        const isImage = media.type.startsWith('image/') && supportedMime(media.type);
         if (isImage) {
           const hit = await persistent?.get(size);
           checkDownload();
@@ -169,7 +170,10 @@ export function createChatMedia(api: ChatApi, current: () => boolean, endpoint: 
         const file = path.join(dir, safeAttachmentFileName(media.name));
         await fs.writeFile(file, buffer); check();
         return { ...base, category: 'file' as const, url: null, path: file };
-      })().finally(() => { cache.delete(key); }));
+      })().then(value => {
+        if (isImage) cache.delete(key);
+        return value;
+      }, error => { cache.delete(key); throw error; }));
       const result = await cache.get(key)!;
       checkDownload();
       return result;

@@ -1337,8 +1337,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // request never rejects a room/Thread; subsequent reads retry after a backoff.
   // Until the bytes are here the view keeps a named placeholder in its place, so
   // a slow or failed download is shown as such instead of disappearing.
-  const downloads = new Map<string, { value?: BotGroupAttachment; retryAt: number }>();
-  let downloadGeneration = media.cacheGeneration;
+  const downloads = new Map<string, { value?: BotGroupAttachment; retryAt: number; generation: number }>();
   // A page's attachments settle close together; one re-read of the room and sidebar shows
   // them all instead of one full re-read per file.
   const attachmentRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1350,10 +1349,6 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }, ATTACHMENT_REFRESH_COALESCE_MS));
   }
   async function messageViews(roomId: string, messages: Message[], members: Member[], ownerMembers: readonly Member[] = members) {
-    if (downloadGeneration !== media.cacheGeneration) {
-      downloads.clear();
-      downloadGeneration = media.cacheGeneration;
-    }
     return messages.map(message => {
       const view = messageView(message, members, ownerMembers);
       for (const block of message.content) if (!message.deleted && block.type === 'media' && block.mediaId) {
@@ -1364,13 +1359,17 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         const mediaId = parsed.data;
         const key = `${roomId}:${mediaId}`;
         let cached = downloads.get(key);
+        // Image cleanup does not own ordinary files, including still-pending transfers.
+        if (cached?.value?.category === 'image' && cached.generation !== media.cacheGeneration) cached = undefined;
         if (!cached || (!cached.value && Date.now() >= cached.retryAt)) {
-          cached = { retryAt: Infinity };
+          cached = { retryAt: Infinity, generation: media.cacheGeneration };
           downloads.set(key, cached);
           const entry = cached;
           void media.download(roomId, mediaId).then(value => {
-            if (current()) entry.value = value;
-          }).catch(() => { entry.retryAt = Date.now() + 30000; })
+            if (!current()) return;
+            if (value.category === 'image' && entry.generation !== media.cacheGeneration) entry.retryAt = 0;
+            else entry.value = value;
+          }).catch(() => { entry.retryAt = entry.generation !== media.cacheGeneration ? 0 : Date.now() + 30000; })
             .finally(() => attachmentsChanged(roomId));
         }
         view.attachments.push(cached.value ?? placeholder(cached.retryAt === Infinity ? 'loading' : 'unavailable'));

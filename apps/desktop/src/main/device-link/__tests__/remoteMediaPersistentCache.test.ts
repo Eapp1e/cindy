@@ -150,6 +150,40 @@ it('keeps Chat Server images out of automatic file eviction and lets manual imag
   expect(fetchMedia).toHaveBeenCalledTimes(2);
 });
 
+// PR #7442 review: ordinary attachments have no persistent image index. Two reads of
+// one PDF must retain the original service-local reuse, including across image cleanup.
+// This unit fixture exercises the real downloader/filesystem; previous cases only used PNG.
+it('reuses ordinary Chat Server files across reads and image cleanup while rechecking access', async () => {
+  const pdf = Buffer.from('%PDF-1.4 test');
+  fetchMedia.mockImplementation(async () => new Response(new Uint8Array(pdf)));
+  const api = vi.fn(async () => ({ ...chatMetadata(), name: 'report.pdf', type: 'application/pdf', size: pdf.length })) as unknown as ChatApi;
+  const service = createChatMedia(api, () => true, chatEndpoint);
+  const first = await service.download('room', 'file');
+  expect(await service.download('room', 'file')).toEqual(first);
+  expect(fetchMedia).toHaveBeenCalledTimes(1);
+  invalidateRemoteMediaPersistentWrites();
+  expect(await service.download('room', 'file')).toEqual(first);
+  expect(await fs.readFile(first.path!)).toEqual(pdf);
+  expect(fetchMedia).toHaveBeenCalledTimes(1);
+  vi.mocked(api).mockRejectedValueOnce(new Error('CONVERSATION_NOT_FOUND'));
+  await expect(service.download('room', 'file')).rejects.toThrow('CONVERSATION_NOT_FOUND');
+  expect(api).toHaveBeenCalledTimes(4);
+});
+
+it('does not cancel an ordinary file transfer when the image cache is cleared', async () => {
+  const pdf = Buffer.from('%PDF-1.4 test');
+  fetchMedia.mockImplementationOnce(async () => {
+    invalidateRemoteMediaPersistentWrites();
+    return new Response(new Uint8Array(pdf));
+  });
+  const api = vi.fn(async () => ({ ...chatMetadata(), name: 'report.pdf', type: 'application/pdf', size: pdf.length })) as unknown as ChatApi;
+  const service = createChatMedia(api, () => true, chatEndpoint);
+  const file = await service.download('room', 'file');
+  expect(await fs.readFile(file.path!)).toEqual(pdf);
+  expect(await service.download('room', 'file')).toEqual(file);
+  expect(fetchMedia).toHaveBeenCalledTimes(1);
+});
+
 it.each(['account', 'clear'] as const)('rejects a Chat Server image arriving after %s changes', async (change) => {
   const changeScope = () => {
     if (change === 'account') { state.owner = 'bob'; state.generation++; }
