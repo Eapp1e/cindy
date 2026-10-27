@@ -507,6 +507,33 @@ describe('chat interaction controls', () => {
     expect(screen.getByText('Latest reply')).toBeTruthy();
   });
 
+  // Unit, PR #7396: two warm topics share a room, but losing one root must not
+  // erase the other. Room revocation must still remove both cached previews.
+  it.each(['MESSAGE_NOT_FOUND', 'CONVERSATION_NOT_FOUND'])('scopes warm topic eviction to the error (%s)', async errorCode => {
+    const room = { ...group, id: `scope-${errorCode}`, historyRevision: `scope-${errorCode}` };
+    mocks.thread.mockImplementation(async ({ rootId }: { rootId: string }) => ({ ok: true,
+      historyRevision: room.historyRevision, root: { ...message, id: rootId, reactions: [] },
+      replies: [{ ...message, id: `${rootId}-reply`, sequence: 2, content: `${rootId} cached reply`, reactions: [] }], hasMore: false }));
+    const open = (rootId: string) => render(<ChatThreadPanel group={room} rootId={rootId} onClose={vi.fn()} />);
+    for (const rootId of ['other', 'root']) {
+      const view = open(rootId);
+      await screen.findByText(`${rootId} cached reply`);
+      view.unmount();
+    }
+    let finish!: (value: unknown) => void;
+    mocks.thread.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const missing = open('root');
+    expect(screen.getByText('root cached reply')).toBeTruthy();
+    await act(async () => finish({ ok: false, errorCode }));
+    expect(screen.queryByText('root cached reply')).toBeNull();
+    missing.unmount();
+    const retry = open('root');
+    expect(screen.queryByText('root cached reply')).toBeNull();
+    retry.unmount();
+    open('other');
+    expect(Boolean(screen.queryByText('other cached reply'))).toBe(errorCode === 'MESSAGE_NOT_FOUND');
+  });
+
   it('re-reads Thread reactors only when this message or the whole room changed, even if the page is not reloaded', async () => {
     const thread = (revisions: Pick<BotGroupDetail, 'reactionRevision' | 'reactionRevisions'>) =>
       <ChatThreadPanel group={{ ...group, ...revisions }} rootId="root" onClose={vi.fn()} />;

@@ -1508,9 +1508,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         ...(revision ? { historyRevision: revision, messageUpdates } : {}),
         ...(readBefore !== undefined ? { readBefore } : {}), ...(following !== undefined ? { following } : {}) };
     } catch (error) {
-      if (error instanceof ChatResponseError && [403, 404].includes(error.status)) {
+      if (error instanceof ChatResponseError && [403, 404].includes(error.status) && error.message !== 'MESSAGE_NOT_FOUND') {
         // Execution metadata is read outside the history transaction, but its denial
-        // also revokes the warm projection. Cleanup must preserve the original error.
+        // also revokes the warm projection. A missing root only invalidates that topic,
+        // not this room's membership or other cached messages. Preserve the original error.
         await cache?.clear(i.groupId).catch(() => undefined);
         displayHistory.forget(i.groupId);
         threads.reset();

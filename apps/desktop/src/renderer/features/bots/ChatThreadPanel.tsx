@@ -243,16 +243,17 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     if (cache.size > 20) cache.delete(cache.keys().next().value!);
   }, [windowKey, root, replies, executionFailures, hasMore]);
 
-  const clearHistory = useCallback(() => {
+  const clearHistory = useCallback((wholeRoom = true) => {
     historyEpochRef.current++;
     queuedSourcesRef.current.clear();
     changedRepliesRef.current.clear();
-    for (const key of windows().keys()) if (key.startsWith(`${group.id}:`)) windows().delete(key);
+    for (const key of windows().keys())
+      if (key === windowKey || (wholeRoom && key.startsWith(`${group.id}:`))) windows().delete(key);
     repliesRef.current = [];
     setReplies([]); setRoot(null); setExecutionFailures([]); setHasMore(false);
     readBeforeRef.current = null; setReadBefore(null); setFollowing(undefined);
     latestFloorRef.current = Number.POSITIVE_INFINITY;
-  }, [group.id]);
+  }, [group.id, windowKey]);
 
   /**
    * Reads the latest page, or the page before `before`. `rereadOnly` re-reads an opened page for a
@@ -284,7 +285,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
         sourceMessageIds: [...new Set([...shown.map(message => message.id), ...extraSources])], markRead });
       if (!current()) return;
       if (!result.ok) {
-        if (threadAccessLost(result.errorCode)) clearHistory();
+        if (threadAccessLost(result.errorCode)) clearHistory(result.errorCode !== 'MESSAGE_NOT_FOUND');
         setError(t(chatErrorKey(result.errorCode))); return;
       }
       const reset = !!result.historyRevision && !!revisionRef.current && result.historyRevision !== revisionRef.current;
@@ -352,7 +353,9 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
           const earlier = await api().thread({ groupId: group.id, rootId, before: page });
           if (!current()) return null;
           if (!earlier.ok) {
-            if (threadAccessLost(earlier.errorCode)) { clearHistory(); setError(t(chatErrorKey(earlier.errorCode))); }
+            if (threadAccessLost(earlier.errorCode)) {
+              clearHistory(earlier.errorCode !== 'MESSAGE_NOT_FOUND'); setError(t(chatErrorKey(earlier.errorCode)));
+            }
             return null;
           }
           if (earlier.historyRevision && earlier.historyRevision !== revisionRef.current) {

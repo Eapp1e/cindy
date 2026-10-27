@@ -160,6 +160,40 @@ describe('Chat Server group open latency (simulated 100ms per request)', () => {
     expect(disk.size).toBe(0);
   });
 
+  // Unit, PR #7396: a missing root and a lost membership both use HTTP 404.
+  // Only the latter may discard another topic's durable history and page coverage.
+  it.each(['MESSAGE_NOT_FOUND', 'CONVERSATION_NOT_FOUND'])('scopes a topic HTTP 404 to its server error code (%s)', async code => {
+    const disk = new Map<string, ChatHistoryState>();
+    const store: ChatHistoryStore = { read: async room => structuredClone(disk.get(room)), write: async (room, state) => {
+      if (state) disk.set(room, structuredClone(state)); else disk.delete(room);
+    } };
+    const missingRoot = '50000000-0000-4000-8000-000000000099';
+    const reply = { ...message, id: '50000000-0000-4000-8000-000000000002', seq: '2', threadRootId: message.id };
+    fixture.handle.mockImplementation(route => route.startsWith('/changes?')
+      ? { body: { cursor: '57', changes: [], hasMore: false } }
+      : route.endsWith(`/messages/${missingRoot}`) ? { status: 404, body: { error: { code } } }
+      : route.endsWith(`/messages/${message.id}`) ? { body: message }
+      : route.includes('/messages?') ? { body: route.includes(missingRoot) ? [] : [reply] } : response(route));
+    service.dispose(); service = withChatServer(local as unknown as BotGroupChatService,
+      { onChanged, chatHistoryStore: () => store } as unknown as BotGroupChatServiceDeps);
+    const input = { groupId: rooms[0], rootId: message.id };
+    const initial = await timed(() => service.chatServer!.thread(input));
+    expect(initial.value).toMatchObject({ ok: true, replies: [{ id: reply.id }] });
+    expect((await timed(() => service.chatServer!.thread({ ...input, rootId: missingRoot }))).value)
+      .toMatchObject({ ok: false, errorCode: code });
+    if (code === 'CONVERSATION_NOT_FOUND') {
+      expect(disk.size).toBe(0);
+    } else {
+      expect(disk.size).toBe(1);
+      const resumed = await timed(() => service.chatServer!.thread(input));
+      expect(resumed.value).toMatchObject({ ok: true, replies: [{ id: reply.id }],
+        historyRevision: initial.value.ok && initial.value.historyRevision });
+      // The failed topic's parallel page may still finish; the surviving topic
+      // must not download its root/page or re-bootstrap the room.
+      expect(resumed.routes.filter(route => !route.includes(missingRoot) && /\/(snapshot|members|messages)(\?|\/|$)/.test(route))).toEqual([]);
+    }
+  });
+
   // Unit: the topic composes independently awaited root, page and failure reads;
   // a membership reset between them must retry, just like the group entry point.
   it('retries a topic if membership resets while execution failures are loading', async () => {
