@@ -5,6 +5,9 @@ import type { RegionRect, RegionScreenshotBitmap } from '../../../shared/regionS
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  ownerScope: 'owner-a:1',
+  boundary: false,
+  invalidations: new Set<() => void>(),
   switches: new Set<string>(),
   create: vi.fn(),
   focus: vi.fn(),
@@ -55,7 +58,14 @@ vi.mock('electron', () => ({
   Menu: { buildFromTemplate: vi.fn() },
   ipcMain: { on: (name: string, fn: (...args: unknown[]) => unknown) => mocks.handlers.set(name, fn), handle: (name: string, fn: (...args: unknown[]) => unknown) => mocks.handlers.set(name, fn) },
 }));
-vi.mock('../../appSessionState', () => ({ activeOwnerScopeKey: () => 'owner-a:1' }));
+vi.mock('../../appSessionState', () => ({
+  activeOwnerScopeKey: () => mocks.ownerScope,
+  isAppSessionBoundaryPending: () => mocks.boundary,
+  onAppSessionInvalidated: (listener: () => void) => {
+    mocks.invalidations.add(listener);
+    return () => { mocks.invalidations.delete(listener); };
+  },
+}));
 vi.mock('../pageWindow', () => ({ createScreenshotPageWindow: mocks.create }));
 vi.mock('../compose', () => ({ handOffScreenshotToTask: vi.fn() }));
 vi.mock('../save', () => ({ saveScreenshotImage: vi.fn(), saveRegionRecording: mocks.saveRecording }));
@@ -134,6 +144,8 @@ describe('screenshot window lifecycle', () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     mocks.switches.clear();
+    mocks.ownerScope = 'owner-a:1';
+    mocks.boundary = false;
     windows = [];
     mocks.create.mockImplementation(() => {
       const window = fakeWindow();
@@ -433,7 +445,7 @@ describe('screenshot window lifecycle', () => {
       expect(await signal(R.SAVE, first.token)).toBe(false);
       expect(win.isVisible()).toBe(true);
       expect(await signal(R.SAVE, first.token)).toBe(true);
-      expect(mocks.saveRecording).toHaveBeenLastCalledWith(clip, 'webm');
+      expect(mocks.saveRecording).toHaveBeenLastCalledWith(clip, 'webm', expect.any(Function));
       // Copy grants no path/payload input: only this preview's current document.
       expect(await mocks.handlers.get(R.COPY)!({ ...event, sender: {} }, first.token)).toBe(false);
       expect(await mocks.handlers.get(R.COPY)!({ ...event, senderFrame: {} }, first.token)).toBe(false);
@@ -458,6 +470,52 @@ describe('screenshot window lifecycle', () => {
       expect(win.isVisible()).toBe(true);
       expect(windows).toHaveLength(1);
     } finally { preview.dispose(); }
+  });
+
+  // PR #7300 owner boundary: existing token checks cannot reject a prior account's
+  // clip. Unit: open after switching, then invalidate during save/copy; old pixels
+  // must disappear and deferred export must be cancelled, while the next owner works.
+  it.each([R.SAVE, R.COPY])('invalidates recording previews and pending %s on an owner boundary', async channel => {
+    const preview = new RecordingPreview();
+    const clip = new Uint8Array(20); clip.set([0x1a, 0x45, 0xdf, 0xa3]);
+    preview.registerIpc(); preview.prewarm();
+    const win = windows[0], event = { sender: win.webContents, senderFrame: win.webContents.mainFrame };
+    const signal = (name: string, ...args: unknown[]) => mocks.handlers.get(name)!(event, ...args);
+    try {
+      signal(R.READY);
+      expect(preview.open(clip, 'webm', display, 'old-owner')).toBe(false);
+      mocks.boundary = true;
+      expect(preview.open(clip, 'webm', display)).toBe(false);
+      mocks.boundary = false;
+      expect(preview.open(clip, 'webm', display)).toBe(true);
+      const doc = win.webContents.send.mock.calls.find(([name]) => name === R.BEGIN)![1];
+      signal(R.PAINTED, doc.token);
+      let finish!: () => void;
+      let isCurrent!: () => boolean;
+      const pending = new Promise<void>(resolve => { finish = resolve; });
+      if (channel === R.COPY) mocks.copyRecording.mockImplementationOnce(async (_bytes, _format, current) => {
+        isCurrent = current;
+        await pending;
+        if (!current()) throw new Error('cancelled');
+      });
+      else mocks.saveRecording.mockImplementationOnce(async (...args: unknown[]) => {
+        isCurrent = args[2] as () => boolean;
+        await pending;
+        return isCurrent();
+      });
+      const exported = signal(channel, doc.token);
+      expect(isCurrent()).toBe(true);
+      for (const invalidate of mocks.invalidations) invalidate();
+      mocks.ownerScope = 'owner-b:2';
+      expect(win.isDestroyed()).toBe(true);
+      expect(isCurrent()).toBe(false);
+      finish();
+      expect(await exported).toBe(false);
+      expect(await signal(channel, doc.token)).toBe(false);
+      expect(preview.open(clip, 'webm', display, 'owner-a:1')).toBe(false);
+      expect(preview.open(clip, 'webm', display)).toBe(true);
+    } finally { preview.dispose(); }
+    expect(mocks.invalidations.size).toBe(0);
   });
 
   // 用户反馈再次截图不可见; 现有覆盖没有验证用过的透明浮层与下一次会话隔离。

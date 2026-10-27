@@ -53,12 +53,13 @@ export async function saveScreenshotImage(image: NativeImage): Promise<boolean> 
 }
 
 /** Export only to a path selected in the native dialog; keep bytes in memory on cancellation. */
-export async function saveRegionRecording(bytes: Uint8Array, format: 'webm' | 'gif'): Promise<boolean> {
+export async function saveRegionRecording(bytes: Uint8Array, format: 'webm' | 'gif', isCurrent: () => boolean = () => true): Promise<boolean> {
+  if (!isCurrent()) return false;
   const result = await dialog.showSaveDialog({
     defaultPath: path.join(lastDirectory ?? app.getPath('videos'), `${t(`regionScreenshot.live.${format === 'gif' ? 'gif' : 'video'}`)} ${Date.now()}.${format}`),
     filters: [{ name: format === 'gif' ? 'GIF' : 'WebM', extensions: [format] }],
   });
-  if (result.canceled || !result.filePath) return false;
+  if (result.canceled || !result.filePath || !isCurrent()) return false;
   const filePath = result.filePath.toLowerCase().endsWith(`.${format}`) ? result.filePath : `${result.filePath}.${format}`;
   try {
     await fs.writeFile(filePath, bytes);

@@ -266,7 +266,7 @@ async function startRegionScreenshot(): Promise<void> {
       topInsets: snap.topInsets,
       lastRegions,
       openEditor: (image, display, selection) => editor.open(image, display, selection, ownerScope),
-      openRecording: (bytes, format, display) => recordingPreview.open(bytes, format, display),
+      openRecording: (bytes, format, display) => recordingPreview.open(bytes, format, display, ownerScope),
       onResult: (value) => {
         result = value;
         lastRegions.set(value.display.id, value.selection);

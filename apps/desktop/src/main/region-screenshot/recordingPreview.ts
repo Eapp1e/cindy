@@ -9,6 +9,7 @@ import { createScreenshotPageWindow } from './pageWindow';
 import { saveRegionRecording } from './save';
 import { copyRegionRecording } from './recordingClipboard';
 import { createLogger } from '../logger';
+import { activeOwnerScopeKey, isAppSessionBoundaryPending, onAppSessionInvalidated } from '../appSessionState';
 
 const log = createLogger('region-screenshot:preview');
 
@@ -17,8 +18,10 @@ export class RecordingPreview {
   private window: BrowserWindow | null = null;
   private ready = false;
   private document: RecordingPreviewDocument | null = null;
+  private ownerScope: string | null = null;
   private saving = false;
   private readonly controller: ResourceUsageWindowController;
+  private readonly unsubscribeOwner: () => void;
 
   constructor() {
     this.controller = new ResourceUsageWindowController({
@@ -48,16 +51,25 @@ export class RecordingPreview {
       onCloseRequested: () => this.close(),
       onUnavailable: () => { this.document = null; },
     });
+    this.unsubscribeOwner = onAppSessionInvalidated(() => {
+      this.document = null;
+      this.ownerScope = null;
+      // Destroy the renderer too: an old clip must not remain playable after logout.
+      // Do not wait for an outstanding save dialog or clipboard operation.
+      if (this.window && !this.window.isDestroyed()) this.window.destroy();
+    });
   }
 
   prewarm(): void { this.controller.prewarm(); }
-  dispose(): void { this.document = null; this.controller.dispose(); }
+  dispose(): void { this.unsubscribeOwner(); this.document = null; this.ownerScope = null; this.controller.dispose(); }
 
-  open(bytes: Uint8Array<ArrayBuffer>, format: 'webm' | 'gif', display: Display): boolean {
-    if (this.document || !validRecordingBytes(bytes, format)) return false;
+  open(bytes: Uint8Array<ArrayBuffer>, format: 'webm' | 'gif', display: Display, ownerScope = activeOwnerScopeKey()): boolean {
+    if (this.document || this.saving || isAppSessionBoundaryPending()
+      || ownerScope !== activeOwnerScopeKey() || !validRecordingBytes(bytes, format)) return false;
     this.controller.prewarm();
     const window = this.window;
     if (!window || window.isDestroyed()) return false;
+    this.ownerScope = ownerScope;
     this.document = { token: randomUUID(), locale: getResolvedMainLocale(), bytes, format };
     const area = screen.getDisplayMatching(display.bounds).workArea;
     const width = Math.min(900, area.width), height = Math.min(660, area.height);
@@ -72,6 +84,7 @@ export class RecordingPreview {
   private owns(event: IpcMainEvent | IpcMainInvokeEvent, token?: unknown): boolean {
     return !!this.window && !this.window.isDestroyed() && event.sender === this.window.webContents
       && event.senderFrame === event.sender.mainFrame
+      && (!this.document || (!isAppSessionBoundaryPending() && this.ownerScope === activeOwnerScopeKey()))
       && (token === undefined || token === this.document?.token);
   }
 
@@ -105,7 +118,7 @@ export class RecordingPreview {
       const doc = this.document;
       if (!doc || this.saving || typeof token !== 'string' || !this.owns(event, token)) return false;
       this.saving = true;
-      try { return await saveRegionRecording(doc.bytes, doc.format); }
+      try { return await saveRegionRecording(doc.bytes, doc.format, () => this.document === doc && this.owns(event, token)); }
       finally { this.saving = false; }
     });
     ipcMain.handle(C.COPY, async (event, token: unknown) => {

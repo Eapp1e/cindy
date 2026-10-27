@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { copyRegionRecording } from '../recordingClipboard';
+import { saveRegionRecording } from '../save';
+import path from 'node:path';
 
 const mock = vi.hoisted(() => ({
   exec: vi.fn(), put: vi.fn(), cleanup: vi.fn(), rollback: vi.fn(), current: vi.fn(),
+  saveDialog: vi.fn(), write: vi.fn(),
 }));
+vi.mock('electron', () => ({ app: { getPath: () => 'videos' }, dialog: { showSaveDialog: mock.saveDialog, showMessageBox: vi.fn() } }));
+vi.mock('node:fs/promises', () => ({ default: { writeFile: mock.write } }));
+vi.mock('../../i18n', () => ({ t: (key: string) => key }));
 vi.mock('node:child_process', () => ({ execFile: mock.exec }));
 vi.mock('../../cindy-media/integrationCache', () => ({ integrationCachePut: mock.put }));
 vi.mock('../../cindy-media/ledger', () => ({ removeRefsExceptHash: mock.cleanup }));
@@ -88,4 +94,24 @@ it('keeps successful clipboard bytes referenced if old-reference cleanup fails',
   mock.cleanup.mockRejectedValueOnce(new Error('DB unavailable'));
   await expect(copyRegionRecording(gif, 'gif', () => true)).resolves.toBeUndefined();
   expect(mock.rollback).not.toHaveBeenCalled();
+});
+
+// PR #7300 owner boundary: clipboard tests do not cover the native save dialog.
+// Unit, real save entry: invalidate while the dialog is pending; no old clip may
+// be written to the newly selected path. Reuse this export suite and fake only I/O.
+it('cancels recording export when ownership changes before the save dialog returns', async () => {
+  let current = true;
+  const filePath = path.join('recordings', 'clip.gif');
+  mock.saveDialog.mockImplementationOnce(async () => {
+    current = false;
+    return { canceled: false, filePath };
+  });
+  expect(await saveRegionRecording(gif, 'gif', () => current)).toBe(false);
+  expect(mock.write).not.toHaveBeenCalled();
+  expect(await saveRegionRecording(gif, 'gif', () => current)).toBe(false);
+  expect(mock.saveDialog).toHaveBeenCalledTimes(1);
+  current = true;
+  mock.saveDialog.mockResolvedValueOnce({ canceled: false, filePath });
+  expect(await saveRegionRecording(gif, 'gif', () => current)).toBe(true);
+  expect(mock.write).toHaveBeenCalledExactlyOnceWith(filePath, gif);
 });

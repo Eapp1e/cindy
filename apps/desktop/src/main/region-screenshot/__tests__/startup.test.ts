@@ -30,7 +30,7 @@ vi.mock('electron', () => ({
   systemPreferences: { getMediaAccessStatus: () => 'granted' },
 }));
 vi.mock('../../logger', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn() }) }));
-vi.mock('../../appSessionState', () => ({ activeOwnerScopeKey: () => 'owner-a:1', isAppSessionBoundaryPending: () => false }));
+vi.mock('../../appSessionState', () => ({ activeOwnerScopeKey: () => 'owner-a:1', isAppSessionBoundaryPending: () => false, onAppSessionInvalidated: () => () => {} }));
 vi.mock('../../i18n', () => ({ t: (key: string) => key }));
 vi.mock('../../app-shortcuts', () => ({
   getAppShortcutStore: () => ({

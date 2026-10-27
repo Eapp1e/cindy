@@ -6516,6 +6516,9 @@ export function ChatInput({
       const request = peekComposerSubmitRequest(storageKey);
       if (!request || editor.isDestroyed) return;
       const ready =
+        composerCanSubmitRef.current &&
+        !!composerSubmitRequestSendRef.current &&
+        !(sessionId && hasPendingAgentSendDispatch(sessionId)) &&
         !composerMutationLockedRef.current &&
         !isEditorEmpty(editor) &&
         latestAttachmentsRef.current.some((file) => file.url === request.attachmentUrl);
@@ -6534,7 +6537,7 @@ export function ChatInput({
       off();
       if (timer) clearTimeout(timer);
     };
-  }, [editor, storageKey]);
+  }, [editor, storageKey, sessionId]);
 
   // ── Model / effort / permission / folder callbacks (unchanged) ─────
   // ---------------------------------------------------------------------------
@@ -9188,9 +9191,11 @@ export function ChatInput({
       !hasVoiceDraftText &&
       !voiceBusyOnCurrentComposer,
   );
+  // Automatic actions must observe the same gates as the current Send button
+  // before consuming their one-shot request, including during subscription effects.
+  composerCanSubmitRef.current = !queueEditActive && !sendButtonDisabled;
   useEffect(() => {
     voiceInputCanStopAndSendRef.current = !queueEditActive && !sendButtonDisabled;
-    composerCanSubmitRef.current = !sendButtonDisabled;
   }, [queueEditActive, sendButtonDisabled]);
   const canReleaseVoiceToSend = Boolean(
     !disabled && (voiceInput.isListening || canSend || hasVoiceDraftText),
