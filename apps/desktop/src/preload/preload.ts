@@ -2378,6 +2378,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ── Discord Bot (Settings → IM Bot tab) ──
   // 用户本机自建 Discord App + Bot Token;凭证保存在本机 secrets。
   discordBot: {
+    reconnect: () => ipcRenderer.invoke('discordBot:reconnect'),
     getStatus: (): Promise<{
       status:
         | { kind: 'idle' }
@@ -4454,6 +4455,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resolvePath: (params: {
     href: string;
     workingDir: string;
+    /** User retry bypasses the host's shared render-time cache. */
+    refresh?: boolean;
   }): Promise<{
     status: 'unique' | 'multiple' | 'none';
     candidates: string[];
