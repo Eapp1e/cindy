@@ -155,6 +155,41 @@ describe('continuous region capture', () => {
     expect(capture.height).toBe(120);
   });
 
+  // PR #7300 native reproduction: chat text scrolls over a fixed wallpaper.
+  // The existing stationary-pane test separates background and content by column;
+  // here they share pixels. Unit: two overlapping crops must extend the image,
+  // while revisiting them must not add duplicate rows or alter exported colours.
+  it('stitches text over a stationary wallpaper without duplicating a return scroll', () => {
+    const chat = (offset: number, light: boolean): RegionScreenshotBitmap => {
+      const width = 240, height = 240, data = new Uint8Array(width * height * 4);
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        const row = y + offset, line = Math.floor(row / 29);
+        const background = 25 + 35 * (1 + Math.sin(y / 23 + x / 80));
+        const ink = x > 45 && x < 210 && row % 29 < 9 && x % 11 < 5
+          && ((line * 7919 + Math.floor(x / 11) * 3571) >>> (row % 9) & 1);
+        const value = Math.round(ink ? 200 + background * 0.15 : background);
+        const at = (y * width + x) * 4;
+        data[at] = data[at + 1] = data[at + 2] = light ? 255 - value : value;
+        data[at + 3] = 255;
+      }
+      return { width, height, data };
+    };
+    for (const light of [false, true]) {
+      const first = chat(0, light), next = chat(47, light);
+      const capture = new ScrollCapture(first);
+      expect(capture.add(next)).toBe('append');
+      expect(capture.height).toBe(287);
+      const output = capture.image();
+      expect(output.data.slice(-47 * 240 * 4)).toEqual(next.data.slice(-47 * 240 * 4));
+      expect(capture.add(first)).toBe('same');
+      expect(capture.image()).toEqual(output);
+      expect(capture.add(chat(94, light))).toBe('append');
+      expect(capture.height).toBe(334);
+      expect(['same', 'unmatched']).toContain(capture.add(chat(3000, light)));
+      expect(capture.height).toBe(334);
+    }
+  });
+
   it('rejects ambiguous repeated content and preserves the result at its size limit', () => {
     const a = scrollingFrame(0), b = scrollingFrame(24);
     const capture = new ScrollCapture(a, 64 * 100);

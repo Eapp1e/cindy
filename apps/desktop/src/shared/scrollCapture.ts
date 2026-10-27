@@ -8,7 +8,7 @@ const COLUMNS = 24;
 // Copy the exact columns used by matching into contiguous rows once. Searching
 // every offset in a full-resolution bitmap otherwise repeatedly touches distant
 // cache lines (and does the same work again for reverse scrolling).
-function sampleColumns(frame: RegionScreenshotBitmap): RegionScreenshotBitmap {
+function sampleColumns(frame: RegionScreenshotBitmap, contrast = false): RegionScreenshotBitmap {
   const columns = Array.from({ length: COLUMNS }, (_, column) => Math.floor(frame.width * (0.05 + (column / (COLUMNS - 1)) * 0.9)));
   const data = new Uint8Array(frame.height * COLUMNS * 4);
   for (let y = 0; y < frame.height; y++) {
@@ -18,6 +18,20 @@ function sampleColumns(frame: RegionScreenshotBitmap): RegionScreenshotBitmap {
       data[to] = frame.data[from];
       data[to + 1] = frame.data[from + 1];
       data[to + 2] = frame.data[from + 2];
+      if (contrast) {
+        // A fixed wallpaper can sit underneath moving, translucent text. Remove
+        // the local background in matching features only; exported pixels stay
+        // untouched. Nine horizontal pixels retain glyph detail while suppressing
+        // smooth background gradients. Centre signed contrast in the byte range.
+        for (let channel = 0; channel < 3; channel++) {
+          let background = 0;
+          for (let dx = -4; dx <= 4; dx++) {
+            const x = Math.max(0, Math.min(frame.width - 1, columns[column] + dx));
+            background += frame.data[(y * frame.width + x) * 4 + channel];
+          }
+          data[to + channel] = Math.round(128 + (frame.data[from + channel] - background / 9) / 2);
+        }
+      }
     }
   }
   return { width: COLUMNS, height: frame.height, data };
@@ -40,7 +54,13 @@ const errorAt = (a: RegionScreenshotBitmap, b: RegionScreenshotBitmap, ay: numbe
 /** Find downward scrolling with overlap; ambiguous/repeated content is never appended. */
 export function matchScrollFrames(previous: RegionScreenshotBitmap, next: RegionScreenshotBitmap, allowReverse = true): ScrollMatch {
   if (previous.width !== next.width || previous.height !== next.height || previous.height < 32) return { kind: 'unmatched' };
-  return matchSampledFrames(sampleColumns(previous), sampleColumns(next), allowReverse);
+  const colour = matchSampledFrames(sampleColumns(previous), sampleColumns(next), allowReverse);
+  if (colour.kind !== 'unmatched') return colour;
+  // Retry rejected colour matches using local contrast, with the same independent
+  // columns, overlap, ambiguity and full-row checks. Do not relax the confidence
+  // thresholds or replace the anchor with an unverified frame after a mismatch.
+  const detail = matchSampledFrames(sampleColumns(previous, true), sampleColumns(next, true), allowReverse);
+  return detail.kind === 'append' || detail.kind === 'prepend' ? detail : colour;
 }
 
 function matchSampledFrames(previous: RegionScreenshotBitmap, next: RegionScreenshotBitmap, allowReverse: boolean): ScrollMatch {
