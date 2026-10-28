@@ -24,6 +24,9 @@ export default {
       await page.getByRole('button', { name: /Alex/ }).click();
       await page.getByRole('button', { name: await ui.t(key + 'transfer'), exact: true }).waitFor();
       await ui.capture('human-transfer');
+      await page.getByRole('button', { name: await ui.t(key + 'transfer'), exact: true }).click();
+      await page.getByText(await ui.t(key + 'transferHint'), { exact: true }).waitFor();
+      await ui.capture('human-transfer-confirmation');
       return;
     }
     const edit = page.getByRole('button', { name: await ui.t(key + 'groupAvatar'), exact: true });
