@@ -1,10 +1,8 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { BotGroupMemberView } from '../../../../shared/botGroupChat';
-import { BotGroupPendingReplies } from '../BotGroupPendingReplies';
 import { BotGroupPendingInteraction } from '../BotGroupPendingInteraction';
 
 const mocks = vi.hoisted(() => ({
@@ -70,7 +68,7 @@ beforeEach(() => {
   mocks.ensureInitialMessages.mockReset();
 });
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(cleanup);
 
 describe('BotGroupPendingInteraction', () => {
   it('renders nothing while the speaking lane waits on no one', () => {
@@ -105,32 +103,5 @@ describe('BotGroupPendingInteraction', () => {
     render(<BotGroupPendingInteraction sessionId="lane" bot={bot} />);
     expect(screen.getByRole('status')).toBeTruthy();
     expect(mocks.ensureInitialMessages).not.toHaveBeenCalled();
-  });
-});
-
-// Production recovery UI: lease-expired work must not masquerade as a permission
-// prompt; explicit per-execution controls must survive remount and remove only on receipt.
-describe('BotGroupPendingReplies', () => {
-  const executions = [{ executionId: 'paused', botId: 'mimi', sourceMessageId: 'source', status: 'needs_input' as const, canStop: true, canRetry: true }];
-  it('keeps recovery separate from live confirmation, handles denial, and refreshes after an exact stop', async () => {
-    const manage = vi.fn().mockResolvedValueOnce({ ok: false, errorCode: 'EXECUTION_OWNER_REQUIRED' }).mockResolvedValue({ ok: true });
-    vi.stubGlobal('electronAPI', { maker: { chatServer: { manage } } });
-    const onChanged = vi.fn();
-    const props = { groupId: 'group', executions, members: [{ botId: 'mimi', name: 'Mimi' }] as BotGroupMemberView[], onChanged };
-    const view = render(<BotGroupPendingReplies {...props} />);
-    expect(screen.queryByRole('status')).toBeNull();
-    expect(screen.queryByText('bots.groupChat.waitingConfirm')).toBeNull();
-    fireEvent.click(screen.getByText('bots.groupChat.pendingReplies.title'));
-    fireEvent.click(screen.getByRole('button', { name: 'bots.groupChat.pendingReplies.retry' }));
-    await screen.findByRole('alert');
-    expect(onChanged).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'bots.groupChat.pendingReplies.stop' }));
-    await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
-    expect(manage).toHaveBeenLastCalledWith({ groupId: 'group', action: { type: 'execution', executionId: 'paused', action: 'stop' } });
-    view.rerender(<BotGroupPendingReplies {...props} executions={[]} />);
-    expect(screen.queryByTestId('bot-group-pending-replies')).toBeNull();
-    view.unmount();
-    render(<BotGroupPendingReplies {...props} />);
-    expect(screen.queryByText('bots.groupChat.progress.elapsed')).toBeNull();
   });
 });

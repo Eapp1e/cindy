@@ -9943,15 +9943,6 @@
       "memberCount_one": "{{count}} 位成员",
       "memberCount_other": "{{count}} 位成员",
       "nameLabel": "群名称",
-      "pendingReplies": {
-        "title": "待处理回复（{{count}}）",
-        "queued": "尚未开始",
-        "needs_input": "回复已暂停",
-        "retry": "重新回复",
-        "stop": "取消回复",
-        "companion": "伙伴",
-        "failed": "未能更新这条回复，请刷新群聊查看状态。"
-      },
       "waitingConfirm": "{{name}}在等你确认",
       "loadFailedTitle": "无法加载这个群聊",
       "loadFailedDescription": "Cindy 暂时读不到这个群的消息。你可以重试，或返回伙伴页。",

@@ -9943,15 +9943,6 @@
       "memberCount_one": "メンバー {{count}} 人",
       "memberCount_other": "メンバー {{count}} 人",
       "nameLabel": "グループ名",
-      "pendingReplies": {
-        "title": "保留中の返信（{{count}}）",
-        "queued": "未開始",
-        "needs_input": "返信を一時停止中",
-        "retry": "もう一度返信",
-        "stop": "返信をキャンセル",
-        "companion": "パートナー",
-        "failed": "この返信を更新できませんでした。グループを更新して状態を確認してください。"
-      },
       "waitingConfirm": "{{name}} があなたの確認を待っています",
       "loadFailedTitle": "このグループチャットを読み込めません",
       "loadFailedDescription": "Cindy は現在このグループチャットを読み込めません。再試行するか、仲間のページに戻ってください。",

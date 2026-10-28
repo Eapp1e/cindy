@@ -441,22 +441,10 @@ export interface BotGroupSpeaker {
   activity: BotGroupSpeakerActivity;
 }
 
-/** Dormant server work is recoverable, not a live speaker or a permission request. */
-export interface BotGroupPendingExecution {
-  executionId: string;
-  botId: string;
-  sourceMessageId: string;
-  status: 'queued' | 'needs_input';
-  canStop: boolean;
-  canRetry: boolean;
-}
-
 export interface BotGroupRoundView {
   status: 'idle' | 'running';
   /** Bots currently taking their turn; several while a circle thinks in parallel. */
   speakers: BotGroupSpeaker[];
-  /** Older hosts omit this; never infer an interactive confirmation from these rows. */
-  pendingExecutions?: BotGroupPendingExecution[];
   /** True when the latest round ended naturally and may be continued. */
   canContinue: boolean;
   /** Server groups: someone else's request or teammate is also working, so stopping only yours leaves it running. */
@@ -830,7 +818,6 @@ export interface ChatInvitePreview {
 }
 export type ChatGroupAction =
   | { type: 'read'; messageId: string; conversationKind?: 'direct' }
-  | { type: 'execution'; executionId: string; action: 'stop' | 'retry' }
   | { type: 'update'; name: string; topic: string; description: string; expectedRevision: number; responseMode?: BotGroupReplyMode; speakingMode?: BotGroupSpeakingMode }
   | { type: 'nickname'; actorId: string; nickname: string | null }
   | { type: 'avatar'; actorId: string; avatar: { type: 'keep' | 'reset' } | { type: 'set'; data: Uint8Array; mimeType: string } }

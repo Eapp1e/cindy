@@ -33,6 +33,7 @@ import { registerGroupToolAuthority, GroupToolAuthorizationError } from './botGr
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { notificationPreview } from '../notificationPreview.js';
+import { markdownPreviewText } from '../../shared/markdownPreviewText.js';
 import { createChatMessageNotifications, selectChatAttentionMessage } from './chatMessageNotifications.js';
 import WebSocket from 'ws';
 import { z } from 'zod';
@@ -48,7 +49,7 @@ import {
   readBotGroupExecutionFailure, type BotGroupExecutionFailureView,
   buildBotGroupThreadShareCard, botGroupThreadShareOperationId, readBotGroupThreadShareCard,
   type BotGroupThreadShareView, type BotGroupThreadSummary, type BotGroupThreadUnread,
-  type BotGroupDetail, type BotGroupSpeaker, type BotGroupPendingExecution, type BotGroupPlanView, type BotGroupFailure, type BotGroupMessageView, type BotGroupAttachment, type ChatServerApi,
+  type BotGroupDetail, type BotGroupSpeaker, type BotGroupPlanView, type BotGroupFailure, type BotGroupMessageView, type BotGroupAttachment, type ChatServerApi,
   botGroupQuoteAttachmentName, botGroupQuoteExcerpt, botGroupQuoteFromMessage, buildBotGroupQuoteCard, readBotGroupQuote, readBotGroupQuoteCard, type BotGroupQuoteView,
   readBotGroupTaskCard, botGroupMessageSummaryText,
 } from '../../shared/botGroupChat.js';
@@ -517,7 +518,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let refreshActors: Promise<void> | undefined;
   let authRefreshPromise: Promise<boolean> | undefined;
   let authRefreshRetryAt = 0;
-  const upgradedGroups = new Map<string, string>();
+  let upgradedGroups = new Map<string, string>();
   /**
    * Per room, bumped by every local or realtime change notice. A reused snapshot or sidebar
    * summary is only valid for the generation it was read in.
@@ -1569,7 +1570,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     // Keep execution identity across computers and concurrent threads. Only the executing
     // computer resolves a lane; authenticated peers retrieve it through the group resource.
     const speakers: BotGroupSpeaker[] = [];
-    for (const e of executions.filter(e => ['running', 'stopping'].includes(e.status))) {
+    for (const e of executions.filter(e => ['queued', 'running', 'needs_input', 'stopping'].includes(e.status))) {
       const run = running.get(e.id);
       const startedAt = run?.started ?? (e.created_at ? Date.parse(e.created_at) : undefined);
       const speaker: BotGroupSpeaker = { botId: localBot(e.bot_id)?.id ?? e.bot_id, sessionId: run?.sessionId || null,
@@ -1578,19 +1579,6 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         activity: e.plan_id ? 'step' : 'reply' };
       speakers.push(speaker);
     }
-    // queued has no executor yet; needs_input has no live lease (it also represents
-    // executor_disconnected). Neither is evidence of a pending Session question.
-    const manager = managementActor(s);
-    const pendingExecutions = executions.flatMap<BotGroupPendingExecution>(e => {
-      if (e.status !== 'queued' && e.status !== 'needs_input') return [];
-      const ownsBot = !!localBot(e.bot_id) || s.members.some(m => m.id === e.bot_id && m.ownerActorId === selfId);
-      const ownsRequest = e.requester_id === selfId || page.some(m => m.id === e.source_message_id && m.authorId === selfId);
-      // Plan steps use their existing plan controls, never a standalone execution retry.
-      const canStop = !e.plan_id && !!(manager || ownsBot || ownsRequest);
-      return [{ executionId: e.id, botId: localBot(e.bot_id)?.id ?? e.bot_id,
-        sourceMessageId: e.source_message_id, status: e.status,
-        canStop, canRetry: canStop && e.status === 'needs_input' && !e.trigger_type }];
-    });
     // The organizer is visibly 「正在看」 while this device decides whether to arrange (§7.2),
     // as the local service showed it. It works on the auxiliary model, not in a lane session.
     const deciding = planning.get(roomId);
@@ -1642,7 +1630,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       createdAt: Date.parse(s.room.created_at), updatedAt: Date.parse(s.room.updated_at ?? s.room.created_at),
       messages, ...(projection ? { historyRevision: projection.generation, messageUpdates } : {}), executionFailures, ...(threadShareUpdates && Object.keys(threadShareUpdates).length ? { threadShareUpdates } : {}),
       ...(shares ? { threadShareVersion: shares.version } : {}), ...(threadList ? { threads: threadList } : {}), hasMoreBefore: page.length === (o.limit ?? 100), plans,
-      round: { status: speakers.length ? 'running' : 'idle', speakers, pendingExecutions,
+      round: { status: deciding || executions.some(e => ['queued', 'running', 'needs_input', 'stopping'].includes(e.status)) ? 'running' : 'idle', speakers,
         othersActive: executions.some(e => ['queued', 'running', 'needs_input'].includes(e.status) && e.requester_id !== selfId
           && !localBot(e.bot_id) && !s.members.some(m => m.id === e.bot_id && m.ownerActorId === selfId)), canContinue: !open && !planning.has(roomId) && (executions.some(e => !e.plan_id && ordinaryExecution(e)) || s.messages.some(discussionSource)) && !executions.some(e => ['queued','running','stopping'].includes(e.status)) } };
   }
@@ -1765,7 +1753,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         operationId: `plan:${sourceId}`, sourceMessageId: sourceId, organizerId: organizer.id, request, steps: decision.steps })).id);
       else if (explicit) await settleExplicitRequest(s.room.id, sourceId, forced && !proposed);
       else await api(`/conversations/${s.room.id}/messages/${sourceId}/continue`, 'POST', { operationId: `discuss:${sourceId}`, ...(groupDiscussionParity ? { automatic: true } : {}) });
-    } catch {
+    } catch (error) {
       if (current() && !controller.signal.aborted) {
         // An organizer failure must not swallow the user's posted request.
         if (explicit) await settleExplicitRequest(s.room.id, sourceId, forced);
@@ -2660,7 +2648,6 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const requested = id.parse(input.groupId);
       const actorAction = z.object({ actorId: id });
       const action = z.discriminatedUnion('type', [
-        z.object({ type: z.literal('execution'), executionId: id, action: z.enum(['stop', 'retry']) }).strict(),
         z.object({ type: z.literal('read'), messageId: id, conversationKind: z.literal('direct').optional() }).strict(),
         z.object({ type: z.literal('update'), name: z.string().trim().min(1).max(40), topic: z.string().max(250), description: z.string().max(2000), responseMode: z.enum(['all', 'mentioned']).optional(), speakingMode: z.enum(['auto', 'sequential']).optional(), expectedRevision: z.number().int().positive() }).strict(),
         actorAction.extend({ type: z.literal('avatar'), avatar: z.discriminatedUnion('type', [
@@ -2677,27 +2664,6 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       ]).parse(input.action);
       const target = action.type === 'read' && action.conversationKind === 'direct'
         ? (await directSnapshot(requested)).room.id : await resolveGroup(requested);
-      if (action.type === 'execution') {
-        const snapshot = await groupSnapshot(target);
-        const rows = await api<Execution[]>(`/conversations/${target}/executions`);
-        const execution = rows.find(e => e.id === action.executionId);
-        if (!execution) throw new Error('EXECUTION_NOT_FOUND');
-        if (execution.plan_id) throw new Error('PLAN_ACTION_REQUIRED');
-        if (action.action === 'retry' && (execution.status !== 'needs_input' || execution.trigger_type))
-          throw new Error('EXECUTION_NOT_RETRYABLE');
-        const ownsBot = !!localBot(execution.bot_id) || snapshot.members.some(m => m.id === execution.bot_id && m.ownerActorId === selfId);
-        // Same account/teammate/manager identities as Stop. The server rechecks
-        // membership, execution ownership, source visibility and retry eligibility.
-        const asActor = ownsBot ? execution.bot_id : managementActor(snapshot);
-        await api(`/conversations/${target}/executions/${execution.id}/control`, 'POST', {
-          operationId: randomUUID(), action: action.action,
-        }, asActor);
-        const run = running.get(execution.id);
-        if (action.action === 'stop' && run) await cancelExecution(run);
-        changed(target);
-        if (action.action === 'retry') triggerClaim();
-        return {};
-      }
       if (action.type === 'read') {
         const snapshot = await recentSnapshot(target);
         if (!snapshot.reads) return {};

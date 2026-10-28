@@ -3802,11 +3802,3 @@ contacts 在每次 begin 投递前核对原元素仍连接、仍声明 contacts�
 旧接收端仍可能丢弃核实状态或把接收回复标成私密；完整修复需要执行交接的宿主升级。
 账号、群与 IM 发言人校验、权限档、Plan、输入代次和撤销校验保持不变。
 不改变连接恢复或重放策略；单次派发失败只影响该请求，不重启连接或扩大设备访问。
-
-## 群聊待处理回复
-
-`BotGroupRoundView` 可选追加 `pendingExecutions`，仅包含已授权群的排队／暂停执行 ID、来源消息 ID、伙伴 ID、状态及操作提示。
-它们不再计入实时 `speakers`；运行中的真实确认仍由 Session 交互状态判定。旧客户端忽略新增字段，旧 Host 省略该字段。
-既有 `chatServer.manage` 增加 `type: execution`，只允许精确 execution ID 的 `stop`／`retry`，复用服务端现有 control 路由及
-身份、来源、重试资格校验，不新增通道或服务端协议。旧 Host 拒绝该未知 action，新界面保留记录并提示失败，不谎报成功。
-无数据库、凭证、Mobile 原生或执行自动重投变更。

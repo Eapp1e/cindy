@@ -9943,15 +9943,6 @@
       "memberCount_one": "{{count}} 位成員",
       "memberCount_other": "{{count}} 位成員",
       "nameLabel": "群聊名稱",
-      "pendingReplies": {
-        "title": "待處理回覆（{{count}}）",
-        "queued": "尚未開始",
-        "needs_input": "回覆已暫停",
-        "retry": "重新回覆",
-        "stop": "取消回覆",
-        "companion": "夥伴",
-        "failed": "未能更新這則回覆，請重新整理群組查看狀態。"
-      },
       "waitingConfirm": "{{name}}在等你確認",
       "loadFailedTitle": "無法載入這個群聊",
       "loadFailedDescription": "Cindy 暫時讀不到這個群聊的訊息。你可以重試，或返回夥伴頁。",

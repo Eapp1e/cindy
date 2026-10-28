@@ -1,4 +1,3 @@
-import { BotGroupPendingReplies } from './BotGroupPendingReplies';
 import { RemoveChatFromListButton } from './RemoveChatFromListButton';
 import { useThreadPanelResize } from './useThreadPanelResize';
 import { cn } from '@/lib/utils';
@@ -1352,10 +1351,6 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
           </div>
         </div>
       ) : null}
-      {!sharing && !group.archived && group.round.pendingExecutions?.length ? <div className="shrink-0 px-5">
-        <BotGroupPendingReplies key={group.id} groupId={group.id} executions={group.round.pendingExecutions}
-          members={group.members} onChanged={() => loadRef.current()} />
-      </div> : null}
       {running && (runningStep || speakers.length > 0) && !sharing && !group.archived ? (
         <BotGroupProgressStrip
           key={runningStep ? `step:${runningStep.plan.id}:${runningStep.step.position}` : speakingKey}

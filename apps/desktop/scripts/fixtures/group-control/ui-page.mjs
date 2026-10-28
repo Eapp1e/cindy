@@ -38,14 +38,6 @@ export default {
       viewport: { width: 720, height: 700 },
       data: { ...base, sidebar: false, remoteLimits: true },
     },
-    'pending-replies': {
-      about: 'Queued and paused replies stay out of live status and have explicit per-reply recovery controls',
-      data: { ...base, messages: 2, pendingReplies: true },
-    },
-    'pending-replies-narrow': {
-      about: 'Recovery controls remain readable in a narrow desktop window', viewport: { width: 480, height: 640 },
-      data: { ...base, sidebar: false, messages: 2, pendingReplies: true },
-    },
     'work-thinking': { about: 'Actual group work status, scenario data: thinking', data: { ...base, messages: 2, workState: 'thinking' } },
     'work-tools': { about: 'Actual group work status, scenario data: command execution', data: { ...base, messages: 2, workState: 'testing' } },
     'work-reading': { about: 'Actual group work status, scenario data: file reading', data: { ...base, messages: 2, workState: 'reading-file' } },
@@ -143,18 +135,9 @@ export default {
       }
       return;
     }
-    if (definition.data.pendingReplies) {
-      const recovery = page.getByTestId('bot-group-pending-replies');
-      await recovery.waitFor({ timeout: 1000 });
-      assert.equal(await page.getByTestId('bot-group-progress').count(), 0);
-      await ui.capture('collapsed');
-      await recovery.locator('summary').click();
-      await ui.capture('expanded');
-      return;
-    }
     if (definition.data.workState) {
       const state = definition.data.workState;
-      await ui.emit('sessionActivity', [{ sessionId: 'fixture-work', phase: state === 'waiting' ? 'needs-interaction' : 'running',
+      await ui.emit('sessionActivity', [{ sessionId: 'fixture-work', phase: 'running',
         workingPhase: ['thinking', 'reading-file', 'testing'].includes(state) ? state : 'processing',
         compactDetail: state === 'testing' ? '检查私聊与群聊的回归结果' : state === 'reading-file' ? '核对群聊状态与任务入口' : '',
         startedAtMs: Date.now() - 83_000, lastActivityAtMs: Date.now(), attention: false,
