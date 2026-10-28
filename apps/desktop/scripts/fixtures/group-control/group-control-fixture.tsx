@@ -12,6 +12,7 @@ interface GroupData {
   workState?: 'thinking' | 'reading-file' | 'testing' | 'waiting' | 'stopping' | 'unknown';
   workRemote?: boolean;
   workParallel?: boolean;
+  pendingReplies?: boolean;
   workLastStopping?: boolean;
   bodyAnswer?: boolean;
   remoteLimits?: boolean;
@@ -282,9 +283,12 @@ function groupFrom(data: GroupData) {
       createdAt: 1700000000000 + i,
     })),
     hasMoreBefore: false,
-    round: data.workState ? { status: 'running', speakers: [{ botId: 'a', executionId: 'fixture-execution', sessionId: data.workRemote || data.workState === 'unknown' ? null : 'fixture-work', activity: 'reply', executionStatus: data.workState === 'waiting' ? 'needs_input' : 'running', startedAt: Date.now() - 83_000, stopping: data.workState === 'stopping' },
+    round: data.workState ? { status: 'running', speakers: [{ botId: 'a', executionId: 'fixture-execution', sessionId: data.workRemote || data.workState === 'unknown' ? null : 'fixture-work', activity: 'reply', executionStatus: 'running', startedAt: Date.now() - 83_000, stopping: data.workState === 'stopping' },
       ...(data.workParallel ? [{ botId: 'b', executionId: 'fixture-second', sessionId: 'fixture-second-work', activity: 'reply', startedAt: Date.now() - 41_000, stopping: !!data.workLastStopping, executionStatus: data.workLastStopping ? 'stopping' : 'running' }] : [])], canContinue: false }
-      : { status: 'idle', speakers: [], canContinue: false },
+      : { status: 'idle', speakers: [], canContinue: false, ...(data.pendingReplies ? { pendingExecutions: [
+        { executionId: 'fixture-queued', botId: 'a', sourceMessageId: 'm0', status: 'queued', canStop: true, canRetry: false },
+        { executionId: 'fixture-paused', botId: 'b', sourceMessageId: 'm1', status: 'needs_input', canStop: true, canRetry: true },
+      ] } : {}) },
   };
 }
 
@@ -309,10 +313,13 @@ void mountPage({
     };
     return {
       agentIsland: { onSessionActivity: subscription('sessionActivity') },
+      localDb: { sessions: { get: async (id: string) => ({ id, agentKind: 'codex', workingDir: '' }) },
+        messages: { list: async () => [] } },
       maker: {
         getCompanionCloudState: async () => ({ enabled: !!data.workRemote, selfDeviceId: null, humanActorId: null, actors: data.workRemote ? [{ id: 'a', externalId: 'a', name: 'Aster', avatar: null, homeDeviceId: 'fixture-mac', homeDevice: { deviceId: 'fixture-mac', name: 'Mac Studio', online: true, remoteControlEnabled: true, isSelf: false } }] : [], demotedBotIds: [] }),
         onCompanionCloudChanged: subscription('companionCloudChanged'),
         polishWorkingStatus: async () => null,
+        getPendingInteractions: async () => [],
         listBotGroups: async () => ({ ok: true, groups: (ctx.data as unknown as GroupData).settings ? [group] : [] }),
         getBotGroup: async () => ({ ok: true, group }),
         onBotGroupChanged: subscription('botGroupChanged'),

@@ -4170,6 +4170,28 @@ it('keeps only the current public progress note between tool calls', () => {
   expect(botGroupWorkPreview({ ...state, streamingText: 'NO_REPLY' }, 2)).toBe('');
 });
 
+// Remounting a group may delay revealing activity, but must never invent an
+// execution start from the component's mount clock (owner report 2026-10-28).
+it('does not show elapsed execution time when the host has no start timestamp', async () => {
+  vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+  try {
+    mocks.activity = null;
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ speakingBotIds: ['mimi'], round: {
+      status: 'running', canContinue: false,
+      speakers: [{ botId: 'mimi', activity: 'reply', executionId: 'unknown-start', sessionId: null, executionStatus: 'running' }],
+    } }) });
+    const first = renderView();
+    await screen.findByTestId('bot-group-speaking');
+    await act(async () => { vi.advanceTimersByTime(4_000); });
+    expect(screen.getByTestId('bot-group-progress').textContent).not.toContain('bots.groupChat.progress.elapsed');
+    first.unmount();
+    renderView();
+    await screen.findByTestId('bot-group-speaking');
+    await act(async () => { vi.advanceTimersByTime(4_000); });
+    expect(screen.getByTestId('bot-group-progress').textContent).not.toContain('bots.groupChat.progress.elapsed');
+  } finally { vi.useRealTimers(); }
+});
+
 // Group work identity: the source computer returns two concurrent executions of the
 // same companion. Open only the requested execution on its original host (unit tier).
 it('opens the exact remote execution and leaves other members’ private tasks unavailable', async () => {

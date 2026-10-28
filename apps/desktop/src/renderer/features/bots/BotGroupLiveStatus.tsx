@@ -163,7 +163,8 @@ function BotGroupSingleProgressStrip({
   const lead = step ? stepSpeaker : speakers.find((speaker) => speaker.activity !== 'planning');
   const sessionId = lead?.sessionId ?? null;
   const live = useSpeakerActivity(lead);
-  const since = live?.startedAtMs ?? lead?.startedAt ?? (step ? step.plan.updatedAt : mountedAt);
+  const startedAt = live?.startedAtMs ?? lead?.startedAt ?? (step ? step.plan.updatedAt : null);
+  const since = startedAt ?? mountedAt;
   const isStopping = stopping || lead?.stopping === true || (!!live?.gracefulStopState && live.gracefulStopState !== 'none');
   const buttonPending = stopPending ?? isStopping;
   const now = useBotGroupNow(true);
@@ -204,10 +205,10 @@ function BotGroupSingleProgressStrip({
                   ? t('bots.groupChat.waitingConfirm', { name: '' })
                   : <BotGenerationLabel sessionId={sessionId ?? undefined} remote={lead?.target ? { deviceId: lead.target.deviceId, botId: lead.target.botId } : undefined} phase={live?.workingPhase ?? 'processing'} startedAt={live?.startedAtMs ?? null} />}
             </span> : null}
-            <span className="shrink-0 tabular-nums">
+            {startedAt !== null ? <span className="shrink-0 tabular-nums">
               {' · '}
-              {t('bots.groupChat.progress.elapsed', { time: formatBotGroupElapsed(now - since, t) })}
-            </span>
+              {t('bots.groupChat.progress.elapsed', { time: formatBotGroupElapsed(now - startedAt, t) })}
+            </span> : null}
           </p>
           <span className="flex shrink-0 items-center gap-1">
             {canView ? (

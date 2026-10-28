@@ -84,19 +84,66 @@ describe('server group feature parity', () => {
     } as unknown as BotGroupChatServiceDeps;
     service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), settleLaneTurn: vi.fn(async () => false), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
   });
-  // Unit regression: remote executions have no local lane but must keep their
-  // exact identity and waiting/stopping state; concurrent turns cannot be deduped.
-  it('retains remote waiting and stopping executions in the group projection', async () => {
+  // Regression #35d1f77: a dormant server execution is not a live confirmation.
+  // The real getGroup projection must keep it actionable without marking the group busy.
+  it('separates queued and interrupted replies from live remote executions', async () => {
     fixture.handle.mockImplementation((route: string) => route.endsWith('/executions') ? { body: [
       { ...execution, status: 'needs_input' },
-      { ...execution, id: '40000000-0000-4000-8000-000000000002', status: 'stopping' },
+      { ...execution, id: '40000000-0000-4000-8000-000000000002', status: 'queued' },
+      { ...execution, id: '40000000-0000-4000-8000-000000000003', status: 'stopping' },
     ] } : response(route));
     const result = await service.getGroup(roomId);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.group.round.speakers.map(speaker => [speaker.executionId, speaker.executionStatus, speaker.sessionId])).toEqual([
-      [execution.id, 'needs_input', null], ['40000000-0000-4000-8000-000000000002', 'stopping', null],
+    expect(result.group.round.speakers.map(speaker => [speaker.executionId, speaker.executionStatus])).toEqual([
+      ['40000000-0000-4000-8000-000000000003', 'stopping'],
     ]);
+    expect(result.group.round.pendingExecutions?.map(row => [row.executionId, row.status])).toEqual([
+      [execution.id, 'needs_input'], ['40000000-0000-4000-8000-000000000002', 'queued'],
+    ]);
+    fixture.handle.mockImplementation((route: string) => route.endsWith('/executions')
+      ? { body: [{ ...execution, status: 'needs_input' }] } : response(route));
+    const dormant = await service.getGroup(roomId);
+    expect(dormant.ok && dormant.group.round.status).toBe('idle');
+  });
+  it('controls only the selected dormant reply and preserves server permission failures', async () => {
+    let state = 'needs_input';
+    fixture.handle.mockImplementation((route: string, method: string, body?: { action?: string }) => {
+      if (route.endsWith('/executions')) return { body: [{ ...execution, status: state }] };
+      if (route.endsWith(`/executions/${execution.id}/control`)) {
+        state = body?.action === 'retry' ? 'queued' : 'cancelled';
+        return { body: {} };
+      }
+      return response(route);
+    });
+    const api = service.chatServer!;
+    expect(await api.manage({ groupId: roomId, action: { type: 'execution', executionId: execution.id, action: 'retry' } })).toEqual({ ok: true });
+    expect(state).toBe('queued');
+    expect(await api.manage({ groupId: roomId, action: { type: 'execution', executionId: execution.id, action: 'stop' } })).toEqual({ ok: true });
+    const after = await service.getGroup(roomId);
+    expect(after.ok && after.group.round.pendingExecutions).toEqual([]);
+    const writes = fixture.handle.mock.calls.filter(([route, method]) => method === 'POST' && route.includes('/control'));
+    expect(writes.map(([route, , body]) => [route, body.action])).toEqual([
+      [`/conversations/${roomId}/executions/${execution.id}/control`, 'retry'],
+      [`/conversations/${roomId}/executions/${execution.id}/control`, 'stop'],
+    ]);
+    state = 'needs_input';
+    fixture.handle.mockImplementation((route: string) => route.endsWith('/control')
+      ? { status: 403, body: { error: { code: 'EXECUTION_OWNER_REQUIRED' } } }
+      : route.endsWith('/executions') ? { body: [{ ...execution, status: state }] } : response(route));
+    expect(await api.manage({ groupId: roomId, action: { type: 'execution', executionId: execution.id, action: 'stop' } }))
+      .toEqual({ ok: false, errorCode: 'EXECUTION_OWNER_REQUIRED' });
+    expect(state).toBe('needs_input');
+  });
+  it('does not retry running work, plan steps or system-triggered replies', async () => {
+    for (const row of [{ ...execution }, { ...execution, status: 'needs_input', plan_id: roomId },
+      { ...execution, status: 'needs_input', trigger_type: 'member.joined' }]) {
+      fixture.handle.mockImplementation((route: string) => route.endsWith('/executions') ? { body: [row] } : response(route));
+      const result = await service.chatServer!.manage({ groupId: roomId,
+        action: { type: 'execution', executionId: execution.id, action: 'retry' } });
+      expect(result.ok).toBe(false);
+    }
+    expect(fixture.handle.mock.calls.some(([route]) => route.includes('/control'))).toBe(false);
   });
   afterEach(() => { service.dispose(); vi.useRealTimers(); vi.unstubAllEnvs(); fixture.config = ''; vi.clearAllMocks(); });
   const secondBotId = '20000000-0000-4000-8000-000000000002';
