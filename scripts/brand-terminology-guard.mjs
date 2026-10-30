@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import process from 'node:process';
+
+import { readTrackedFiles, TrackedFilesError } from './lib/tracked-files.mjs';
 
 const FORBIDDEN_TERMS = [
   {
@@ -76,18 +77,13 @@ function fail(message) {
   process.exit(1);
 }
 
-const listed = spawnSync('git', ['ls-files', '-z'], {
-  encoding: 'buffer',
-});
-
-if (listed.status !== 0) {
-  fail(`git ls-files failed with exit ${listed.status ?? 'null'}\n${listed.stderr?.toString('utf8') ?? ''}`);
+let files;
+try {
+  files = readTrackedFiles();
+} catch (error) {
+  if (!(error instanceof TrackedFilesError)) throw error;
+  fail(error.message);
 }
-
-const files = listed.stdout
-  .toString('utf8')
-  .split('\0')
-  .filter(Boolean);
 
 const violations = [];
 const agentToolIdentifierViolations = [];
