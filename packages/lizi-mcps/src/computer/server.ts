@@ -106,23 +106,26 @@ export function blockedSessionHotkey(
  * window; drop process command lines and enrichment that bury the actual error
  * (2026-10-29 audit: a launch failure returned the whole window list first).
  */
+/** One window reduced to what identifies it; process command lines and enrichment are dropped. */
+function compactWindowEntry(window: unknown): unknown {
+  if (!window || typeof window !== 'object') return window;
+  const w = window as Record<string, unknown>;
+  const identity = w.identity && typeof w.identity === 'object' ? w.identity as Record<string, unknown> : undefined;
+  return {
+    ...(w.pid !== undefined ? { pid: w.pid } : {}),
+    ...(w.window_id !== undefined ? { window_id: w.window_id } : {}),
+    ...(w.app_name !== undefined ? { app_name: w.app_name } : {}),
+    ...(w.title !== undefined ? { title: w.title } : {}),
+    ...(w.is_on_screen !== undefined ? { is_on_screen: w.is_on_screen } : {}),
+    ...(identity?.kind !== undefined ? { identity: { kind: identity.kind, ...(identity.hints ? { hints: identity.hints } : {}) } } : {}),
+  };
+}
+
 export function compactWindowDiscovery<T>(read: T): T {
   if (!read || typeof read !== 'object') return read;
   const data = (read as { data?: unknown }).data;
   if (!data || typeof data !== 'object' || !Array.isArray((data as { windows?: unknown }).windows)) return read;
-  const windows = ((data as { windows: unknown[] }).windows).map((window) => {
-    if (!window || typeof window !== 'object') return window;
-    const w = window as Record<string, unknown>;
-    const identity = w.identity && typeof w.identity === 'object' ? w.identity as Record<string, unknown> : undefined;
-    return {
-      ...(w.pid !== undefined ? { pid: w.pid } : {}),
-      ...(w.window_id !== undefined ? { window_id: w.window_id } : {}),
-      ...(w.app_name !== undefined ? { app_name: w.app_name } : {}),
-      ...(w.title !== undefined ? { title: w.title } : {}),
-      ...(w.is_on_screen !== undefined ? { is_on_screen: w.is_on_screen } : {}),
-      ...(identity?.kind !== undefined ? { identity: { kind: identity.kind, ...(identity.hints ? { hints: identity.hints } : {}) } } : {}),
-    };
-  });
+  const windows = ((data as { windows: unknown[] }).windows).map(compactWindowEntry);
   return { ...read, data: { ...(data as Record<string, unknown>), windows } } as T;
 }
 
@@ -896,6 +899,8 @@ export function createComputerMcpServer(
           tool: name,
           data: {
             ...located,
+            // The located windows are evidence for the next call, not a process dump.
+            windows: located.windows.map(compactWindowEntry),
             located: true,
             launched: false,
             source: "running_windows",
@@ -905,7 +910,7 @@ export function createComputerMcpServer(
               code: errorCode,
               message: err instanceof Error ? err.message : String(err),
             },
-            discovery: appDiscovery,
+            discovery: compactWindowDiscovery(appDiscovery),
           },
         });
       }
@@ -920,7 +925,7 @@ export function createComputerMcpServer(
           ...(appDiscovery || installedDiscovery
             ? {
                 recovery: {
-                  discovery: appDiscovery,
+                  discovery: compactWindowDiscovery(appDiscovery),
                   installed_discovery: installedDiscovery,
                   next_step: "choose_application",
                   target_selected: false,
