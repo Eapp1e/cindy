@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Linking, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Linking, Platform, Pressable, ScrollView, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -21,6 +21,8 @@ import { PluginCardActions } from '@/plugins/PluginCardActions';
 import { formatMailDate } from '@/plugins/mailReaderDate';
 import { appendQuote, truncateQuoteText } from '@/session/chatQuoteStore';
 import { usePluginResultCard } from '@/session/usePluginResultCard';
+import { MessageListRevealContext } from '@/session/messageListReveal';
+import { useMobileKeyboardState } from '@/session/useMobileKeyboardState';
 import { fontWeight, iconSize, iconStroke, lineHeight, spacing, typeScale, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { goBackGuarded } from '@/utils/backGuard';
 
@@ -34,6 +36,18 @@ export default function MailPreviewScreen() {
   const url = typeof params.url === 'string' ? params.url : '';
   const { t, i18n } = useTranslation(), styles = useThemedStyles(makeStyles), router = useRouter();
   const { mode, colors } = useTheme(), insets = useSafeAreaInsets();
+  const scroll = useRef<ScrollView>(null), offset = useRef(0), userScrolled = useRef(false);
+  const keyboard = useMobileKeyboardState();
+  // Standalone drafts edit inside this page: keep the caret above the keyboard like the chat list does.
+  const revealRect = useCallback((rect: { top: number; bottom: number }) => {
+    const view = scroll.current;
+    if (!view) return;
+    (view as unknown as { measureInWindow(cb: (x: number, y: number, w: number, h: number) => void): void }).measureInWindow((_x, y, _w, h) => {
+      const top = y + insets.top + 56, bottom = y + h - (Platform.OS === 'ios' ? keyboard.height : 0) - spacing.sm;
+      const delta = rect.bottom > bottom ? Math.min(rect.bottom - bottom, rect.top - top) : rect.top < top ? rect.top - top : 0;
+      if (Math.abs(delta) >= 1) scroll.current?.scrollTo({ y: Math.max(0, offset.current + delta), animated: true });
+    });
+  }, [insets.top, keyboard.height]);
   const { invoke, connectionEpoch, status } = useDeviceLink();
   const { accountGeneration } = useAuth();
   const [attempt, setAttempt] = useState(0);
@@ -84,7 +98,11 @@ export default function MailPreviewScreen() {
         style={styles.headerButton} onPress={openMailbox}>
         <ExternalLink size={iconSize.action} strokeWidth={iconStroke.regular} color={colors.textPrimary} />
       </Pressable>} />
-    <ScrollView {...simpleScrollInsetProps} contentContainerStyle={[styles.content, !mail || draft ? styles.contentPlain : null]}>
+    <MessageListRevealContext.Provider value={revealRect}>
+    <ScrollView ref={scroll} {...simpleScrollInsetProps} keyboardShouldPersistTaps="handled" scrollEventThrottle={16}
+      onScroll={event => { offset.current = event.nativeEvent.contentOffset.y; }}
+      onScrollBeginDrag={() => { userScrolled.current = true; }}
+      contentContainerStyle={[styles.content, !mail || draft ? styles.contentPlain : null, draft && Platform.OS === 'ios' ? { paddingBottom: spacing.xl + keyboard.height } : null]}>
       {draft ? <DraftEditor key={binding} deviceId={deviceId} sessionId={sessionId} callId={draft} /> : mail ? <>
         <View style={styles.subject}>
           <Text selectable style={styles.title}>{mail.subject || t('plugins.mailReader.title')}</Text>
@@ -94,7 +112,8 @@ export default function MailPreviewScreen() {
           <Text style={styles.noticeText}>{t('plugins.mailReader.conversationFailed')}</Text>
           <MainWindowActionButton action={{ label: t('plugins.mailReader.retry'), onPress: () => setAttempt(n => n + 1) }} />
         </View>}
-        <MailThread key={binding} mail={mail} deviceId={deviceId} read={read} language={i18n.language} />
+        <MailThread key={binding} mail={mail} deviceId={deviceId} read={read} language={i18n.language}
+          onSelectedLayout={y => { if (!userScrolled.current) scroll.current?.scrollTo({ y: Math.max(0, y - spacing.md), animated: false }); }} />
       </> : <>
         {current?.providers?.length ? <>
           <Text style={styles.secondary}>{t('plugins.mailReader.choosePlugin')}</Text>
@@ -111,6 +130,7 @@ export default function MailPreviewScreen() {
         </>}
       </>}
     </ScrollView>
+    </MessageListRevealContext.Provider>
     {mail && !draft ? <View style={[styles.replyBar, { backgroundColor: paper, paddingBottom: Platform.OS === 'ios' ? Math.max(insets.bottom, spacing.sm) : spacing.sm }]}>
       <ReplyButton label={t('plugins.mailReader.reply')} Icon={Reply} onPress={() => reply('reply')} />
       {recipientCount > 1 && <ReplyButton label={t('plugins.mailReader.replyAll')} Icon={ReplyAll} onPress={() => reply('replyAll')} />}
@@ -130,9 +150,10 @@ function ReplyButton({ label, Icon, onPress }: { label: string; Icon: typeof Rep
 
 /** Chronological, like Desktop: the opened message is shown in full; others are one
  * tap away and read only when the user asks, so hidden bodies are never fetched. */
-function MailThread({ mail, deviceId, read, language }: { mail: MailMessage; deviceId: string; read: ReadMail; language: string }) {
+function MailThread({ mail, deviceId, read, language, onSelectedLayout }: { mail: MailMessage; deviceId: string; read: ReadMail; language: string; onSelectedLayout?: (y: number) => void }) {
   const { t } = useTranslation(), styles = useThemedStyles(makeStyles);
   const [revealed, setRevealed] = useState<Set<string>>(() => new Set());
+  const threadY = useRef(0), reported = useRef(false);
   const messages: MailMessageSummary[] = mail.conversation?.messages ?? [{ messageId: mail.messageId, url: '', from: mail.from, date: mail.date, subject: mail.subject, snippet: '' }];
   if (messages.length === 1) return <MessageContent mail={mail} deviceId={deviceId} language={language} />;
   const selectedIndex = messages.findIndex(m => m.messageId === mail.messageId);
@@ -152,10 +173,17 @@ function MailThread({ mail, deviceId, read, language }: { mail: MailMessage; dev
     }
     const summary = messages[i++];
     const selected = summary.messageId === mail.messageId;
-    rows.push(<ThreadMessage key={summary.messageId} summary={summary} initial={selected ? mail : undefined}
-      accountId={mail.accountId} deviceId={deviceId} read={read} language={language} />);
+    rows.push(<View key={summary.messageId} onLayout={selected && selectedIndex > 0 ? (event: LayoutChangeEvent) => {
+      // Open on the message the user came for, once; later manual scrolling is never overridden.
+      if (reported.current) return;
+      const y = event.nativeEvent.layout.y;
+      reported.current = true; setTimeout(() => onSelectedLayout?.(threadY.current + y), 0); // parent layout is reported after its children
+    } : undefined}>
+      <ThreadMessage summary={summary} initial={selected ? mail : undefined}
+        accountId={mail.accountId} deviceId={deviceId} read={read} language={language} />
+    </View>);
   }
-  return <View>{rows}</View>;
+  return <View onLayout={event => { threadY.current = event.nativeEvent.layout.y; }}>{rows}</View>;
 }
 
 function ThreadMessage({ summary, initial, accountId, deviceId, read, language }: {
@@ -226,7 +254,7 @@ function MessageContent({ mail, deviceId, language, hideSender }: { mail: MailMe
     {recipients.length ? <View style={styles.recipients}>
       {recipients.map(field => <Text key={field.name} selectable style={styles.secondary}>
         <Text style={styles.recipientLabel}>{field.label}  </Text>
-        {ghostCardRecipients(field.value).map(r => r.label || r.address).join(', ')}
+        {ghostCardRecipients(field.value).map(r => r.address).join(', ')}
       </Text>)}
     </View> : null}
     {mail.markReadFailed && <Text style={styles.noticeText}>{t('plugins.mailReader.markReadFailed')}</Text>}
