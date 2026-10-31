@@ -24,10 +24,16 @@ vi.mock('../components/chat/ModelLightbox', () => ({
   ModelLightbox: () => React.createElement('div', { 'data-testid': 'model-lightbox' }),
 }));
 
-vi.mock('../components/chat/ImageMissingPlaceholder', () => ({
-  ImageMissingPlaceholder: ({ filename, status = 'unavailable' }: { filename: string; status?: string }) =>
-    React.createElement('div', { 'data-testid': 'image-failure', 'data-status': status }, filename),
-}));
+vi.mock('../components/chat/ImageMissingPlaceholder', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../components/chat/ImageMissingPlaceholder')>();
+  const { Tooltip } = await import('../components/ui/tooltip');
+  return {
+    ImageMissingPlaceholder: (props: React.ComponentProps<typeof actual.ImageMissingPlaceholder>) =>
+      React.createElement(Tooltip.Provider, null,
+        React.createElement('div', { 'data-testid': 'image-failure', 'data-status': props.status ?? 'unavailable' },
+          React.createElement(actual.ImageMissingPlaceholder, props))),
+  };
+});
 
 import { ChatImageView } from '../components/chat/ChatImageView';
 import { prepareShareMessageClone } from '../lib/shareConversationImage';
@@ -93,6 +99,24 @@ describe('ChatImageView', () => {
   });
 
   describe.each(['user-attached', 'tool-output'] as const)('%s diagnostics', (variant) => {
+    // #8208, unit: exercise the real failure card's action, not only the hook.
+    // Existing tests recovered on window focus but had no user-triggered retry.
+    it('retries a readable image through its failure card without requesting new bytes itself', async () => {
+      const read = vi.fn().mockResolvedValue({ base64: 'aW1hZ2U=', mimeType: 'image/png' });
+      vi.stubGlobal('electronAPI', { readCachedImageAsBase64: read });
+      render(React.createElement(ChatImageView, {
+        src: 'cindy-media://blobs/a.png', filename: 'a.png', variant,
+      }));
+      fireEvent.error(screen.getByAltText('a.png'));
+      const retry = await screen.findByRole('button', { name: 'commonUi.retry: a.png' });
+      expect(screen.queryByAltText('a.png')).toBeNull();
+      fireEvent.click(retry);
+      expect(screen.queryByTestId('image-failure')).toBeNull();
+      fireEvent.load(screen.getByAltText('a.png'));
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(read).toHaveBeenCalledTimes(1);
+    });
+
     it('keeps a loading frame until decode and resets it for a different source', async () => {
       const props = { filename: 'a.png', variant };
       const { rerender } = render(React.createElement(ChatImageView, {

@@ -15,6 +15,7 @@ import { ImageOff, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Tooltip } from '@/components/ui/tooltip';
+import { Button } from '@/components/ui/button';
 
 interface ImageMissingPlaceholderProps {
   status?: 'loading' | 'missing' | 'unavailable';
@@ -22,6 +23,8 @@ interface ImageMissingPlaceholderProps {
   className?: string;
   /** Pixel cap to roughly match the original image bounds. */
   maxWidth?: number;
+  /** Remount a readable image after a transient display failure; never regenerate it. */
+  onRetry?: () => void;
 }
 
 export function ImageMissingPlaceholder({
@@ -29,6 +32,7 @@ export function ImageMissingPlaceholder({
   filename,
   className,
   maxWidth = 280,
+  onRetry,
 }: ImageMissingPlaceholderProps) {
   const { t } = useTranslation();
   return (
@@ -69,6 +73,17 @@ export function ImageMissingPlaceholder({
         </Tooltip.Trigger>
         <Tooltip.Content variant="mono">{filename}</Tooltip.Content>
       </Tooltip.Root>
+      {status === 'unavailable' && onRetry && (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          aria-label={`${t('commonUi.retry')}: ${filename}`}
+          onClick={onRetry}
+        >
+          {t('commonUi.retry')}
+        </Button>
+      )}
     </div>
   );
 }
