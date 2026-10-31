@@ -43,6 +43,9 @@ describe("isShellDesktopInputCommand", () => {
     `xvkbd -text x`,
     `nircmd.exe sendkeypress ctrl+v`,
     `AutoHotkey.exe click.ahk`,
+    // review round 16: System Events addressed by bundle id
+    `osascript -e 'tell application id "com.apple.systemevents" to tell process "Cindy" to set value of text field 1 of window 1 to "secret"'`,
+    `osascript -l JavaScript -e 'Application("com.apple.SystemEvents").processes.byName("Cindy").windows[0].buttons[0].click()'`,
     // review round 14: a read-only head told to run another program, or an env assignment that does
     `printf x > 'c:100,100'; rg --pre cliclick z 'c:100,100'`,
     `rg --pre=cliclick z f`,
@@ -110,6 +113,7 @@ describe("isShellDesktopInputCommand", () => {
     `sed -n '1,5p' apps/desktop/src/main/mcp-integrations/computer.ts`,
     `sed -n '/CGEventPost/,/^}/p' computer.ts`,
     `sed -n '$p' notes.md`,
+    `osascript -e 'tell application id "com.apple.systemevents" to get the name of every process'`,
     // review round 9: reading accessibility values and process state stays allowed
     `osascript -e 'tell application "System Events" to get value of text field 1 of window 1 of process "Cindy"'`,
     `osascript -e 'tell application "System Events" to get the name of every process whose visible is true'`,
