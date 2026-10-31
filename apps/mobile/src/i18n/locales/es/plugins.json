@@ -31,7 +31,9 @@
     "showMessages_other": "Mostrar {{count}} correos",
     "conversationFailed": "No se pudieron cargar otros correos electrónicos en esta conversación.",
     "expandMessage": "Ampliar correo electrónico de {{from}}",
-    "collapseMessage": "Contraer correo electrónico de {{from}}"
+    "collapseMessage": "Contraer correo electrónico de {{from}}",
+    "messageCount_many": "{{count}} correos",
+    "showMessages_many": "Mostrar {{count}} correos"
   },
   "title": "Complementos",
   "all": "Todo",

@@ -31,7 +31,9 @@
     "showMessages_other": "Afficher {{count}} e-mails",
     "conversationFailed": "Impossible de charger les autres e-mails de cette conversation.",
     "expandMessage": "Développer l'e-mail de {{from}}",
-    "collapseMessage": "Réduire l'e-mail de {{from}}"
+    "collapseMessage": "Réduire l'e-mail de {{from}}",
+    "messageCount_many": "{{count}} e-mails",
+    "showMessages_many": "Afficher {{count}} e-mails"
   },
   "title": "Plugins",
   "all": "Tous",
