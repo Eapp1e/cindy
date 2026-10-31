@@ -98,16 +98,35 @@ function isReadOnlySegment(segment: string): boolean {
   return false;
 }
 
+const SUBSTITUTION_RE =
+  /\$\(([^()]*(?:\([^()]*\)[^()]*)*)\)|`([^`]*)`|[<>]\(([^()]*)\)/g;
+
+/** Bodies of `$(…)`, backtick and process substitutions in a segment (one nesting level). */
+function substitutionBodies(segment: string): string[] {
+  const bodies: string[] = [];
+  for (const match of segment.matchAll(SUBSTITUTION_RE)) {
+    bodies.push(match[1] ?? match[2] ?? match[3] ?? "");
+  }
+  // An unbalanced `$(` that the pattern could not extract: keep the segment rather than trust it.
+  if (bodies.length === 0 && /\$\(|`|[<>]\(/.test(segment))
+    bodies.push(segment);
+  return bodies;
+}
+
 /** True when a shell command synthesizes desktop keyboard or mouse input. */
 export function isShellDesktopInputCommand(command: string): boolean {
   if (typeof command !== "string" || command.length === 0) return false;
   // Drop read-only segments, then scan what remains as one text: AppleScript and
   // JXA payloads span `;` and `|` inside their quotes, so remaining segments are
   // rejoined rather than judged one by one.
-  const executed = command
-    .split(/&&|\|\||;|\|/)
-    .filter((segment) => !isReadOnlySegment(segment))
-    .join(" ; ");
+  // A read-only segment still runs the command substitutions in its arguments
+  // (`rg "$(osascript -e '… keystroke …')" .`), so those bodies are scanned too.
+  const executedParts: string[] = [];
+  for (const segment of command.split(/&&|\|\||;|\|/)) {
+    if (!isReadOnlySegment(segment)) executedParts.push(segment);
+    else executedParts.push(...substitutionBodies(segment));
+  }
+  const executed = executedParts.join(" ; ");
   return SHELL_DESKTOP_INPUT_PATTERNS.some((pattern) => pattern.test(executed));
 }
 

@@ -34,6 +34,11 @@ describe("isShellDesktopInputCommand", () => {
     `osascript -l JavaScript -e 'ObjC.import("CoreGraphics"); $.CGEventPost(0, e)'`,
     `cat > /tmp/click.swift <<'EOF'\nlet e = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)\nEOF`,
     `rg foo src && osascript -e 'tell application "System Events" to keystroke "a"'`,
+    // review: a read-only head still executes the substitutions in its arguments
+    `rg "$(osascript -e 'tell application "System Events" to keystroke "x"')" .`,
+    "grep -r `cliclick c:1,1` src",
+    // and a text writer piped into an interpreter is not a read-only segment
+    `printf 'tell application "System Events" to keystroke "x"' | osascript`,
   ])("matches synthesized input: %s", (command) => {
     expect(isShellDesktopInputCommand(command)).toBe(true);
   });
@@ -54,6 +59,8 @@ describe("isShellDesktopInputCommand", () => {
     `git commit -m "fix osascript keystroke guard for cliclick and CGEventPost"`,
     `git -C /repo log --oneline -S SendInput`,
     `rg cliclick /opt/homebrew/bin/cliclick.md`,
+    `rg "$(pwd)/CGEventPost" src`,
+    `git log --grep=SendInput --since "$(date -v-7d +%F)"`,
     `cua-driver --version`,
     `cua-driver status`,
     `xcrun simctl io booted screenshot /tmp/sim.png`,
