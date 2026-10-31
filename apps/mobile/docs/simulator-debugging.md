@@ -85,7 +85,9 @@ explicitly leaves visible-window acceptance to a screenshot/manual check. Withou
    先处理该故障，不能把“检查失败”当作“需要重建”。后台构建保留日志和退出码，用宿主的进程
    完成通知/状态查看推进，不用固定数分钟的 `sleep` 判断完成，不因等待较久重复启动构建。
 5. 复用匹配的 Metro；需要接管且已获授权时只用 `mobile:sim:start -- --takeover`，不手工
-   `kill`、不清登录态、不改端口来规避身份检查。Metro 持续运行并保留日志。安装和启动是独立
+   `kill`、不清登录态、不改端口来规避身份检查。`8081` 属于其他任务、又不接管时，按
+   [Parallel devices](#parallel-devices-another-task-owns-8081) 给本任务单独的设备和端口，
+   后续 `whoami` 同时传 `--udid` 和 `--port`。Metro 持续运行并保留日志。安装和启动是独立
    结果：`rebuild` 可能已经安装成功但因 Metro 未就绪而以非零退出；此时准备 Metro 后启动正确
    App，不必再次编译。只有 Metro 属于目标 worktree 后才 launch/reload App。
 6. 按下方身份合同确认 `whoami healthy: true`、`native-matched` 和本次新的 `iOS Bundled …`，
@@ -117,16 +119,21 @@ apply". Treat the following as a contract, not optional steps:
   client* is installed. A pure JS/UI change (most edits) never bumps it. So a
   matching build number is necessary-but-not-sufficient.
 - **JS freshness = which Metro the app is connected to.** With multiple mobile
-  worktrees open, several Metro servers run at once and the app silently
-  connects to whichever it last used (often `8081`, which is frequently a
-  *different* branch). "The app opened" ≠ "it loaded my bundle".
+  worktrees open, several Metro servers run at once. Each device loads from its
+  own `RCT_jsLocation` if that Metro answers, otherwise silently from `8081`
+  (frequently a *different* branch) — see
+  [Multi-worktree Metro and parallel devices](#multi-worktree-metro-and-parallel-devices).
+  "The app opened" ≠ "it loaded my bundle".
 - **Evidence required before trusting the simulator:**
   1. The `__DEV__` build label at the top of the new-session screen shows
      `branch@commit+dirty-fingerprint · vX (build) · <metro host:port>`, and the
      fingerprint is **your current worktree**. (Injected by `mobile:sim:start`; see below.)
   2. `pnpm mobile:sim:whoami` exits nonzero unless a booted development client,
-     the current worktree's `8081` Metro, and the exact source fingerprint all
-     agree, including `native.healthy: true` / `native-matched`; the label's port must map to your worktree.
+     the current worktree's Metro on the expected port (`8081`, or `--port`), and
+     the exact source fingerprint all agree, including `native.healthy: true` /
+     `native-matched`; the label's port must map to your worktree. `whoami` does
+     not read the device's `RCT_jsLocation`, so the label is what proves which
+     Metro the app actually used.
   3. The Metro terminal printed a fresh `iOS Bundled …` after your edit.
 
 ### Tools (use these instead of ad-hoc `lsof`/`PlistBuddy`/deep-link dances)
@@ -177,20 +184,87 @@ live in the **root** `package.json` (`mobile:sim:*`), not
 `apps/mobile/package.json`, because the latter's `scripts` field IS a fingerprint
 input — adding a script there would bump the mobile runtime version.
 
-### Multi-worktree Metro pitfall
+### Multi-worktree Metro and parallel devices
 
-- The debug app has **no `expo-dev-client` dependency**, so it only ever loads
-  its compiled default packager port (`8081`) — a `xdmaker://expo-development-client/?url=…`
-  deep link or a `--dev-client` "No apps connected" state will NOT switch it.
-  Starting Metro on any other port leaves the app loading a stale `8081` bundle.
-- Therefore `mobile:sim:start` defaults to `8081` and never auto-bumps. It reuses a
-  Metro only when worktree, source, region and environment all match. An authorized
-  `--takeover` stops only a confirmed Cindy Metro; unknown/non-Metro owners are refused.
-  Use `mobile:sim:whoami` to inspect ownership. An explicit `--port` is for callers
-  that can actually point their app there, not a workaround for this debug app.
-- If `8081` belongs to this worktree but its injected fingerprint no longer equals
-  the current worktree, `mobile:sim:start` refuses instead of claiming Metro is
-  reusable. An authorized `--takeover` refreshes its identity after the amend/rebase/reset or edit.
+How the iOS debug app picks its Metro (React Native `RCTBundleURLProvider`):
+
+1. It reads `RCT_jsLocation` (`host:port`) from the app's user defaults. These
+   are stored per simulator and per bundle ID. If that Metro answers, the app
+   loads from it.
+2. Otherwise it **silently** falls back to the compiled default `localhost:8081`
+   (`RCT_METRO_PORT`). This also happens when `RCT_jsLocation` points at a Metro
+   that has stopped.
+
+The app has **no `expo-dev-client` dependency**: a `xdmaker://expo-development-client/?url=…`
+deep link or a `--dev-client` "No apps connected" state will NOT switch it.
+
+Consequences:
+
+- Starting Metro on another port changes nothing until a device is pointed at it.
+- Because the setting is per device, several simulators can run different
+  worktrees at the same time, each on its own port.
+- Both fallbacks are silent: a stopped Metro sends the device back to whichever
+  worktree owns `8081`, and a leftover `RCT_jsLocation` keeps a device on an old
+  port after you expect `8081`. `whoami` checks the Metro on the port you pass,
+  not where the device points; the build label's `host:port` is the proof.
+
+`mobile:sim:start` port policy:
+
+- It defaults to `8081` and never auto-bumps. It reuses a Metro only when
+  worktree, source, region and environment all match. If `8081` belongs to this
+  worktree but its injected fingerprint no longer equals the current worktree, it
+  refuses instead of claiming Metro is reusable.
+- An authorized `--takeover` stops only a confirmed Cindy Metro on `8081` (and
+  refreshes this worktree's own Metro after an amend/rebase/reset or edit);
+  unknown/non-Metro owners are refused. Use `mobile:sim:whoami` to inspect ownership.
+- An explicit `--port <p>` starts Metro only. It refuses an occupied port, cannot
+  be combined with `--takeover`, and does not point any device; follow the
+  parallel steps below. Never use it to make the identity check pass for a device
+  that still loads `8081`.
+
+#### Parallel devices (another task owns `8081`)
+
+When `8081` serves another task and you are not authorized to take it over, give
+this task its own device and port instead of waiting or taking over:
+
+1. Use a device no other task is using: create one with `xcrun simctl create`,
+   or `xcrun simctl clone` a shut-down device to keep its login. One device
+   follows one Metro; never repoint a device another task is testing on.
+2. Install the matching native app on it:
+   `pnpm mobile:sim:rebuild -- --region=<region> --udid <UDID>`. While `8081`
+   belongs to another worktree it installs, then exits nonzero with
+   `launch blocked`; that is expected, do not rebuild again.
+3. Start this worktree's Metro on a free port and keep it running:
+   `pnpm mobile:sim:start -- --region=<region> --port 8082` (same `--mock` choice
+   as the other commands). `whoami` scans `8081`–`8086`, so stay in that range.
+4. Point the device and relaunch the app (`<bundleId>` is `bundleId` in the
+   `whoami` JSON). For a device in Cindy's simulator, add
+   `--set "$HOME/Library/Application Support/BaguetteCindy/devices"` after `simctl`:
+
+   ```bash
+   xcrun simctl spawn <UDID> defaults write <bundleId> RCT_jsLocation localhost:8082
+   xcrun simctl terminate <UDID> <bundleId>; xcrun simctl launch <UDID> <bundleId>
+   ```
+
+5. Verify all of: `pnpm mobile:sim:whoami -- --region=<region> --udid <UDID> --port 8082`
+   passes; `xcrun simctl spawn <UDID> defaults read <bundleId> RCT_jsLocation`
+   prints `localhost:8082`; the `8082` Metro log shows a new `iOS Bundled …` after
+   the launch; and the build label shows `:8082` with this worktree's fingerprint.
+6. Clean up when done: stop this Metro, then on that device run
+   `defaults delete <bundleId> RCT_jsLocation` (via `simctl spawn`, as above)
+   and relaunch. Delete devices you created if they are no longer needed. Do not
+   leave a device pointed at a port nobody owns.
+
+Before reusing any device, run `defaults read … RCT_jsLocation`. "Does not exist"
+means it follows `8081`.
+
+Android has the same per-app idea under a different name: React Native reads
+the app's `debug_http_host` preference (dev menu → Change bundle location). Without
+it, a stock emulator connects to `10.0.2.2:8081`, which is the host's `8081`
+directly, so `adb reverse` alone does not repoint it. The Windows
+`mobile:sim:start -- --port <p>` only adds `adb reverse tcp:<p> tcp:<p>`.
+Parallel Android runs are not yet a verified recipe here; prove each one with
+a new `Android Bundled …` in your Metro's log and the build label.
 
 ### Native build gotcha
 
@@ -283,7 +357,8 @@ pnpm mobile:sim:whoami -- --region=cn     # China Mainland
 `mobile:sim:whoami` resolves the selected identity from `app.config.js` plus the
 gitignored `scripts/self-host-regions.json`, then prints the installed version
 and build number from that app's `Info.plist`. It is a doctor command: no booted
-device, no selected native app, no current-worktree `8081` Metro, or a source
+device, no selected native app, no current-worktree Metro on the expected port
+(`8081` unless `--port`), or a source
 fingerprint mismatch makes it exit nonzero. Expected version values come from
 `apps/mobile/app.json`:
 

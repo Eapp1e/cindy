@@ -104,6 +104,11 @@ JSON 已包含 `worktree` / `expectedSource`、`region` / `bundleId`、目标设
 不要用临时 Metro、端口探测或手工修改 `.env` 代替这些脚本。多 worktree、原生构建、
 登录态和日志排查见 `apps/mobile/docs/simulator-debugging.md`。
 
+多个 iOS 模拟器可以同时跑不同 worktree：每台设备的开发版 App 按自己的 `RCT_jsLocation` 选择
+Metro，那里没有 Metro 响应时才退回 `8081`。`8081` 属于其他任务、又不接管时，给本任务单独的
+设备和端口，步骤、验证与收尾见该手册的
+[Parallel devices](../../apps/mobile/docs/simulator-debugging.md#parallel-devices-another-task-owns-8081)。
+
 ## 分层验证
 
 Release 构建必须使用 `NODE_ENV=production BABEL_ENV=production`，包括手动调用
