@@ -21,21 +21,94 @@ const SHELL_DESKTOP_INPUT_PATTERNS: readonly RegExp[] = [
   /\bSystem Events\b[\s\S]{0,400}?\b(?:keystroke|key code|key down|key up|click)\b/i,
   /\bosascript\b[\s\S]{0,400}?\b(?:keystroke|key code|key down|key up)\b/i,
   // macOS third-party click / key CLIs.
-  /(?:^|[\s|&;(`$])cliclick\b/,
+  // Optionally path-qualified (/opt/homebrew/bin/cliclick); the name must end the
+  // token so a file such as docs/cliclick-notes.md is not a command.
+  /(?:^|[\s|&;(`$])(?:\S*\/)?cliclick(?=\s|$)/,
   // CoreGraphics event synthesis from inline Swift / Python / JXA.
   /\bCGEventPost\b|\bCGEventCreate(?:Mouse|Keyboard|ScrollWheel)Event\b|\bCGEvent\s*\(\s*(?:mouseEventSource|keyboardEventSource|scrollWheelEvent2Source)/,
   // Linux / Windows equivalents.
-  /(?:^|[\s|&;(`$])(?:xdotool|ydotool|xte)\s+(?:key|type|click|mousemove|mousedown|mouseup)\b/,
+  /(?:^|[\s|&;(`$])(?:\S*\/)?(?:xdotool|ydotool|xte)\s+(?:key|type|click|mousemove|mousedown|mouseup)\b/,
   /\bSendKeys\b|\bSendInput\b|\bmouse_event\b|\bkeybd_event\b/,
   // The driver binary itself: same engine, but the native CLI / MCP skips the
   // Cindy session, guards and result verification.
   /(?:^|[\s|&;(`$/])cua-driver\s+(?!--version\b|version\b|status\b|health\b)[a-z]/,
 ];
 
+const READ_ONLY_HEADS: ReadonlySet<string> = new Set([
+  "rg",
+  "grep",
+  "egrep",
+  "fgrep",
+  "zgrep",
+  "ag",
+  "ack",
+  "head",
+  "tail",
+  "less",
+  "more",
+  "bat",
+  "wc",
+]);
+const READ_ONLY_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "grep",
+  "log",
+  "show",
+  "diff",
+  "blame",
+  "commit",
+  "tag",
+]);
+const COMMAND_WRAPPERS: ReadonlySet<string> = new Set([
+  "sudo",
+  "command",
+  "env",
+  "time",
+  "nohup",
+  "nice",
+  "exec",
+]);
+
+/**
+ * A top-level pipeline segment whose command only reads or searches text, so the
+ * names inside its arguments (`rg CGEventPost src`, `git commit -m "… SendKeys"`)
+ * are data, not input being synthesized. `cat` counts only without a redirect or
+ * heredoc: `cat > click.swift <<EOF` writes the script that would be run next.
+ */
+function isReadOnlySegment(segment: string): boolean {
+  const tokens = segment
+    .trim()
+    .replace(/^[({\s]+/, "")
+    .split(/\s+/);
+  let index = 0;
+  while (
+    index < tokens.length &&
+    (/^\w+=\S*$/.test(tokens[index]!) || COMMAND_WRAPPERS.has(tokens[index]!))
+  )
+    index += 1;
+  const head = (tokens[index] ?? "").split("/").pop() ?? "";
+  if (READ_ONLY_HEADS.has(head)) return true;
+  if (head === "cat") return !/>|<</.test(segment);
+  if (head === "git") {
+    const sub =
+      tokens
+        .slice(index + 1)
+        .find((token) => !token.startsWith("-") && !token.includes("/")) ?? "";
+    return READ_ONLY_GIT_SUBCOMMANDS.has(sub);
+  }
+  return false;
+}
+
 /** True when a shell command synthesizes desktop keyboard or mouse input. */
 export function isShellDesktopInputCommand(command: string): boolean {
   if (typeof command !== "string" || command.length === 0) return false;
-  return SHELL_DESKTOP_INPUT_PATTERNS.some((pattern) => pattern.test(command));
+  // Drop read-only segments, then scan what remains as one text: AppleScript and
+  // JXA payloads span `;` and `|` inside their quotes, so remaining segments are
+  // rejoined rather than judged one by one.
+  const executed = command
+    .split(/&&|\|\||;|\|/)
+    .filter((segment) => !isReadOnlySegment(segment))
+    .join(" ; ");
+  return SHELL_DESKTOP_INPUT_PATTERNS.some((pattern) => pattern.test(executed));
 }
 
 export const SHELL_DESKTOP_INPUT_DENIAL_CODE =

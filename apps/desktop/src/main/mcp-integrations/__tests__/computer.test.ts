@@ -676,6 +676,23 @@ describe('computer mcp integration', () => {
     expect(byPid[99]).toMatchObject({ kind: 'browser', hints: [expect.stringContaining('set_value')] });
   });
 
+  // Review (#8227): a page or document titled "Simulator" is not the simulator.
+  it('does not label a browser window as ios-simulator because of its title', async () => {
+    mcpCallToolMock.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '{"ok":true,"windows":[{"pid":99,"window_id":11,"app_name":"Google Chrome","title":"iOS Simulator – Simulator.app guide"},{"pid":55,"window_id":12,"app_name":"Cursor","title":"simulator-notes.md"}]}' }],
+    });
+    mockProcessSnapshotSpawn([
+      { pid: 99, name: 'Google Chrome', command: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' },
+      { pid: 55, name: 'Cursor', command: '/Users/x/ios-simulator-tools/node_modules/.bin/cursor' },
+    ]);
+    const result = await callComputerDriverTool('list_windows', { session: 'sim-title' }, { sessionId: 'sim-title' }) as {
+      windows: Array<{ pid: number; identity: { kind: string } }>;
+    };
+    const byPid = Object.fromEntries(result.windows.map((window) => [window.pid, window.identity.kind]));
+    expect(byPid[99]).toBe('browser');
+    expect(byPid[55]).not.toBe('ios-simulator');
+  });
+
   it('filters list_windows locally by process name', async () => {
     mcpCallToolMock.mockResolvedValueOnce({
       content: [{ type: 'text', text: '{"ok":true,"windows":[{"pid":123,"window_id":7,"app_name":"Electron","title":"App"},{"pid":456,"window_id":8,"app_name":"Safari","title":"Docs"}]}' }],
@@ -4413,6 +4430,37 @@ describe('foreground input while the person is using this computer', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Review (#8227): an AX write or app launch sends no HID event, so it must not take
+  // the credit for the person's typing that follows it.
+  it.each([
+    ['set_value', { element_token: 'x:1', value: 'hi' }],
+    ['launch_app', { name: 'Notes' }],
+  ] as const)('does not attribute later input to a %s that synthesized none', async (tool, extra) => {
+    vi.useFakeTimers();
+    try {
+      await callComputerDriverTool('get_window_state', target, context);
+      await callComputerDriverTool(tool, tool === 'launch_app' ? { ...extra } : { ...target, ...extra }, context).catch(() => undefined);
+      powerMonitorState.idleSeconds = 1;
+      await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'foreground' }, context))
+        .rejects.toMatchObject({ code: expect.stringMatching(/USER_INPUT_ACTIVE|STALE_SNAPSHOT/) });
+      // A fresh read lets the check run on its own merits.
+      await callComputerDriverTool('get_window_state', target, context);
+      await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'foreground' }, context))
+        .rejects.toMatchObject({ code: 'USER_INPUT_ACTIVE' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not attribute input to a foreground action the guard refused', async () => {
+    await callComputerDriverTool('get_window_state', target, context);
+    powerMonitorState.idleSeconds = 0;
+    await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'foreground' }, context))
+      .rejects.toMatchObject({ code: 'USER_INPUT_ACTIVE' });
+    await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'foreground' }, context))
+      .rejects.toMatchObject({ code: 'USER_INPUT_ACTIVE' });
   });
 
   it('reports the lock state from power events, else from the idle-state probe', async () => {

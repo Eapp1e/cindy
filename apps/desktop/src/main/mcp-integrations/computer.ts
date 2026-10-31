@@ -1608,6 +1608,14 @@ function inferWindowIdentity(
     processInfo?.command ?? '',
     processInfo?.executable ?? '',
   ].join(' ').toLowerCase();
+  // Simulator identity comes from the app and its executable only. A browser tab
+  // or document titled "Simulator" must not be told to stop using synthetic input.
+  const appName = (typeof window.app_name === 'string' ? window.app_name : '').trim().toLowerCase();
+  const executableText = `${processInfo?.name ?? ''} ${processInfo?.command ?? ''} ${processInfo?.executable ?? ''}`.toLowerCase();
+  const isIosSimulator =
+    appName === 'simulator' ||
+    appName === 'device hub' ||
+    /(?:^|[\\/])simulator\.app[\\/]|(?:^|[\\/])device hub\.app[\\/]|com\.apple\.(?:iphonesimulator|coresimulator)/.test(executableText);
 
   let kind: WindowIdentity['kind'] = 'unknown';
   let confidence = 0;
@@ -1615,7 +1623,7 @@ function inferWindowIdentity(
   // Simulator first: its process line also mentions node/electron-free paths,
   // and a Device Hub (Cindy's simulator surface) window must never fall into
   // the generic branches below.
-  if (/simulator\.app|com\.apple\.(?:iphonesimulator|coresimulator)|\bdevice hub\b|\bsimulator\b/.test(haystack)) {
+  if (isIosSimulator) {
     kind = 'ios-simulator';
     confidence = 0.8;
     labels.push('simulator');
@@ -3552,13 +3560,37 @@ let agentInputsInFlight = 0;
 let screenLockedByEvent: boolean | undefined;
 let powerMonitorHooked = false;
 
-/** Called around every non-read driver dispatch, so its events are attributed to the Agent. */
-function trackAgentInputDispatch<T>(run: () => Promise<T>): Promise<T> {
+/**
+ * Tools that synthesize keyboard / pointer events and therefore move the system
+ * idle clock. `set_value` (AX write), `launch_app`, recording and the like do not,
+ * so they must not take the credit for a person's input that follows them.
+ */
+const HID_SYNTHESIZING_TOOLS: ReadonlySet<string> = new Set([
+  'click', 'double_click', 'right_click', 'drag', 'type_text', 'press_key', 'hotkey', 'scroll',
+]);
+
+/**
+ * Called around every non-read driver dispatch. Only an input that may really
+ * have produced HID events is attributed to the Agent: the tool must synthesize
+ * events, and the call must have returned or failed with an unknown outcome
+ * (partial typing). A refusal (background_unavailable, USER_INPUT_ACTIVE, stale
+ * snapshot) sent nothing and leaves the person's activity record untouched.
+ */
+async function trackAgentInputDispatch<T>(name: string, run: () => Promise<T>): Promise<T> {
+  if (!HID_SYNTHESIZING_TOOLS.has(name)) return run();
   agentInputsInFlight += 1;
-  return run().finally(() => {
+  let attributable = false;
+  try {
+    const result = await run();
+    attributable = true;
+    return result;
+  } catch (err) {
+    attributable = (err as { outcomeUnknown?: unknown } | null)?.outcomeUnknown === true;
+    throw err;
+  } finally {
     agentInputsInFlight -= 1;
-    lastAgentInputEndedAt = Date.now();
-  });
+    if (attributable) lastAgentInputEndedAt = Date.now();
+  }
 }
 
 export function resetDesktopInputGuardStateForTests(): void {
@@ -3724,8 +3756,9 @@ async function callComputerDriverToolImpl(
           observation.requiresObservation = true;
           observation.windows.clear();
         }
-        // Only input moves the system idle clock; a read must not mask a person's input.
-        return trackAgentInputDispatch(invoke);
+        // Only HID-synthesizing input moves the system idle clock; neither a read nor
+        // an AX write may mask a person's input.
+        return trackAgentInputDispatch(name, invoke);
       }, { signal, assertCurrent: assertActive });
     return name === 'list_windows' ? enrichAndFilterListWindowsResult(result, rawArgs) : result;
   } catch (err) {

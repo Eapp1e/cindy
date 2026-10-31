@@ -26,6 +26,14 @@ describe("isShellDesktopInputCommand", () => {
     `powershell -Command "[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')"`,
     `cua-driver click --pid 11629 --x 600 --y 320`,
     `/Users/dash/.local/bin/cua-driver type-text --pid 1 --text hi`,
+    // path-qualified binaries (review: absolute paths bypassed the guard)
+    `/opt/homebrew/bin/cliclick c:100,100`,
+    `/usr/bin/xdotool key Return`,
+    // payloads that carry separators inside quotes, and a script written then run
+    `osascript -e 'tell application "System Events"; keystroke "x"; end tell'`,
+    `osascript -l JavaScript -e 'ObjC.import("CoreGraphics"); $.CGEventPost(0, e)'`,
+    `cat > /tmp/click.swift <<'EOF'\nlet e = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)\nEOF`,
+    `rg foo src && osascript -e 'tell application "System Events" to keystroke "a"'`,
   ])("matches synthesized input: %s", (command) => {
     expect(isShellDesktopInputCommand(command)).toBe(true);
   });
@@ -39,6 +47,13 @@ describe("isShellDesktopInputCommand", () => {
     `git commit -m "fix keystroke handling in composer"`,
     `rg "keystroke" apps/desktop/src`,
     `cat docs/cliclick-notes.md`,
+    // read-only search / history over files that merely mention the APIs (review)
+    `rg 'CGEventPost' apps/desktop/src`,
+    `grep -rn "SendKeys" packages | head`,
+    `git grep -n CGEventCreateMouseEvent`,
+    `git commit -m "fix osascript keystroke guard for cliclick and CGEventPost"`,
+    `git -C /repo log --oneline -S SendInput`,
+    `rg cliclick /opt/homebrew/bin/cliclick.md`,
     `cua-driver --version`,
     `cua-driver status`,
     `xcrun simctl io booted screenshot /tmp/sim.png`,
