@@ -153,6 +153,9 @@
   版本，所以脚本三种模式都从 `package-desktop.mjs` 产出的 `build-info.json`（`--build-info=<路径>`，必填）读取版本号、
   区域与发版提交：版本无关包（version 为 null）、0.0.0 及带路径字符的版本号直接报错，开发版（0.0.0）没有发布的手册；
   `commitSha` 必须等于当前检出的 HEAD 且手册没有未提交改动，否则报错，由此自动保证在这个包的发版提交上执行。
+  打包侧（`package-desktop.mjs`）在有版本打包时拒绝带未提交改动的手册，并把安装包里实际打进去的手册写入
+  `build-info.json` 的 `mcpAppsManual: { sha256, size }`（版本无关包或没有内置手册时为 `null`）；发布脚本要求
+  检出里手册的 sha256 与 size 与它一致，缺这个字段（旧打包脚本产出）也拒绝，需重新打包。
   对应客户端上线前，对每个区域的 `build-info.json`（`apps/desktop/release/artifacts/<region>/<version>/<platform-arch>/`）
   各执行一次 `node --env-file=<发布配置> scripts/publish-page-manual.mjs --build-info=<路径>`（发版提交里没有手册时
   跳过）；`--dry-run` 不连 OSS、不联网，只打印 key、sha256 与 CDN 地址。**发版前检查项**：global 与 cn 两份
