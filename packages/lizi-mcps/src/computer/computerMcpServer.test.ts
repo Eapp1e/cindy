@@ -1928,7 +1928,9 @@ describe('createComputerMcpServer desktop guards', () => {
     const deps: ComputerMcpDeps = { getStatus: vi.fn(), callTool: vi.fn(async () => ({ ok: true })) };
     const h = await makeHarness(deps, { sessionId: 'hotkey-guard' });
     try {
-      for (const keys of [['ctrl', 'cmd', 'q'], ['Command', 'Shift', 'Q'], ['win', 'l']]) {
+      for (const keys of [['ctrl', 'cmd', 'q'], ['Command', 'Shift', 'Q'], ['win', 'l'],
+        // review: restart / shut down chords reached the driver
+        ['ctrl', 'cmd', 'power'], ['ctrl', 'alt', 'cmd', 'power'], ['control', 'option', 'command', 'eject'], ['ctrl', 'power']]) {
         const blocked = textPayload(await h.client.callTool({ name: 'call_tool', arguments: {
           name: 'hotkey', args: { pid: 1, window_id: 2, keys },
         } })) as { ok: boolean; errorCode?: string };

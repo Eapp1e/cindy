@@ -71,6 +71,9 @@ const SESSION_HOTKEY_BLOCKLIST: ReadonlySet<string> = new Set([
   ['alt', 'cmd', 'shift', 'q'],  // macOS log out without confirmation
   ['alt', 'cmd', 'eject'], ['alt', 'cmd', 'power'],       // macOS sleep
   ['ctrl', 'shift', 'eject'], ['ctrl', 'shift', 'power'], // macOS display sleep
+  ['ctrl', 'cmd', 'eject'], ['ctrl', 'cmd', 'power'],     // macOS restart
+  ['alt', 'ctrl', 'cmd', 'eject'], ['alt', 'ctrl', 'cmd', 'power'], // macOS shut down
+  ['ctrl', 'eject'], ['ctrl', 'power'],                   // macOS restart / sleep / shut down dialog
   ['win', 'l'],                  // Windows lock
   ['ctrl', 'alt', 'delete'],     // Windows / Linux secure attention
 ].map(normalizedHotkeyChord));
