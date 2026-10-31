@@ -18,7 +18,10 @@ const SHELL_DESKTOP_INPUT_PATTERNS: readonly RegExp[] = [
   // AppleScript / JXA keyboard and mouse synthesis. Only System Events (or the
   // osascript wrapper) combined with an input verb; reading window titles via
   // System Events is not input.
-  /\bSystem Events\b[\s\S]{0,400}?\b(?:keystroke|key code|key down|key up|click)\b/i,
+  // Mutating verbs only: keyboard / pointer events and writes through the accessibility
+  // tree (`set value of`, `perform action`, `set selected`, `increment`, `decrement`).
+  // `get value of …` and process / window queries stay readable.
+  /\bSystem Events\b[\s\S]{0,400}?\b(?:keystroke|key code|key down|key up|click|set\s+(?:the\s+)?value|perform\s+action|set\s+selected|increment|decrement)\b/i,
   /\bosascript\b[\s\S]{0,400}?\b(?:keystroke|key code|key down|key up)\b/i,
   // macOS third-party click / key CLIs.
   // Optionally path-qualified (/opt/homebrew/bin/cliclick); the name must end the

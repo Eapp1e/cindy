@@ -43,6 +43,10 @@ describe("isShellDesktopInputCommand", () => {
     `xvkbd -text x`,
     `nircmd.exe sendkeypress ctrl+v`,
     `AutoHotkey.exe click.ahk`,
+    // review round 9: writes through the accessibility tree are input too
+    `osascript -e 'tell application "System Events" to set value of text field 1 of window 1 of process "Cindy" to "secret"'`,
+    `osascript -e 'tell application "System Events" to tell process "Cindy" to perform action "AXPress" of button 1 of window 1'`,
+    `osascript -e 'tell application "System Events" to set selected of row 2 of table 1 of window 1 of process "Finder" to true'`,
     // review round 8: the executable sits inside a wrapper's command string
     `bash -c 'cliclick c:1,1'`,
     `sh -c "xdotool click 1"`,
@@ -85,6 +89,9 @@ describe("isShellDesktopInputCommand", () => {
     `git -C /repo log --oneline -S SendInput`,
     `rg cliclick /opt/homebrew/bin/cliclick.md`,
     `rg "$(pwd)/CGEventPost" src`,
+    // review round 9: reading accessibility values and process state stays allowed
+    `osascript -e 'tell application "System Events" to get value of text field 1 of window 1 of process "Cindy"'`,
+    `osascript -e 'tell application "System Events" to get the name of every process whose visible is true'`,
     // review round 8: read-only sed and other pure readers over files that mention the APIs
     `sed -n '/CGEventPost/p' apps/desktop/src/main/mcp-integrations/computer.ts`,
     `sed -nE '1,40p;/SendKeys/p' scripts/notes.md`,
