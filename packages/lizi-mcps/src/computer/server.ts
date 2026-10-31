@@ -57,12 +57,20 @@ const HOTKEY_ALIASES: Record<string, string> = {
   opt: 'alt', del: 'delete', escape: 'esc',
 };
 
+/**
+ * One canonical form per chord: entries may themselves be "ctrl+cmd" strings,
+ * case and alias spellings collapse, order is irrelevant and a repeated modifier
+ * is the same key held once (["ctrl","ctrl","cmd","q"] is still the lock chord).
+ */
 function normalizedHotkeyChord(keys: readonly string[]): string {
-  return keys
-    .map((key) => key.trim().toLowerCase())
-    .map((key) => HOTKEY_ALIASES[key] ?? key)
-    .sort()
-    .join('+');
+  const canonical = new Set(
+    keys
+      .flatMap((key) => key.split('+'))
+      .map((key) => key.trim().toLowerCase())
+      .filter((key) => key.length > 0)
+      .map((key) => HOTKEY_ALIASES[key] ?? key),
+  );
+  return [...canonical].sort().join('+');
 }
 
 const SESSION_HOTKEY_BLOCKLIST: ReadonlySet<string> = new Set([

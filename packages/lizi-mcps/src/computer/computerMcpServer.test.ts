@@ -1930,7 +1930,9 @@ describe('createComputerMcpServer desktop guards', () => {
     try {
       for (const keys of [['ctrl', 'cmd', 'q'], ['Command', 'Shift', 'Q'], ['win', 'l'],
         // review: restart / shut down chords reached the driver
-        ['ctrl', 'cmd', 'power'], ['ctrl', 'alt', 'cmd', 'power'], ['control', 'option', 'command', 'eject'], ['ctrl', 'power']]) {
+        ['ctrl', 'cmd', 'power'], ['ctrl', 'alt', 'cmd', 'power'], ['control', 'option', 'command', 'eject'], ['ctrl', 'power'],
+        // review: one canonical form (repeats, "a+b" entries, stray spaces, case)
+        ['ctrl', 'ctrl', 'cmd', 'q'], ['ctrl+cmd', 'q'], [' Ctrl ', 'CMD', 'Q'], ['cmd', 'q', 'ctrl', 'q']]) {
         const blocked = textPayload(await h.client.callTool({ name: 'call_tool', arguments: {
           name: 'hotkey', args: { pid: 1, window_id: 2, keys },
         } })) as { ok: boolean; errorCode?: string };
@@ -1943,6 +1945,9 @@ describe('createComputerMcpServer desktop guards', () => {
       expect(deps.callTool).not.toHaveBeenCalledWith('hotkey', expect.anything(), expect.anything());
       expect(deps.callTool).not.toHaveBeenCalledWith('press_key', expect.anything(), expect.anything());
 
+      // an ordinary chord that shares keys with a blocked one stays allowed
+      await h.client.callTool({ name: 'call_tool', arguments: { name: 'hotkey', args: { pid: 1, window_id: 2, keys: ['ctrl', 'q'] } } });
+      expect(deps.callTool).toHaveBeenCalledWith('hotkey', expect.objectContaining({ keys: ['ctrl', 'q'] }), expect.anything());
       await h.client.callTool({ name: 'call_tool', arguments: { name: 'hotkey', args: { pid: 1, window_id: 2, keys: ['cmd', 'c'] } } });
       expect(deps.callTool).toHaveBeenCalledWith('hotkey', expect.objectContaining({ keys: ['cmd', 'c'] }), expect.anything());
     } finally { await h.cleanup(); }
