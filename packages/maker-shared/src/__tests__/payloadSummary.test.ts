@@ -396,7 +396,7 @@ describe('payloadSummary', () => {
     });
 
     // 约 1 MiB 的内联图片:档位要按取整后的展示值选,不能留在 KB 档显示 "1024 KB"。
-    // 1048575 字节的 base64 载荷,按解码后的字节数计(padding 2)。
+    // 1048575 字节的 base64 载荷,按解码后的字节数计(无 padding)。
     const nearMibB64 = 'A'.repeat(1398100);
     expect(summarizeMessagePayloadBody(buildAttachmentPayload({
       kind: 'image',
