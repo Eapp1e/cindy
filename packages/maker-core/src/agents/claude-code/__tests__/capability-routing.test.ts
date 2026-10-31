@@ -202,6 +202,25 @@ describe('Claude disabled built-in surfaces', () => {
     ]);
     expect(buildClaudeDeniedMcpServers(undefined)).toEqual([]);
   });
+
+  // A user-mcp route names the user's own registration on purpose (cua-driver →
+  // cindy_computer); it is applied only as a denied server, never narrowed.
+  it('applies a user-mcp route only as a disabled server', () => {
+    const userRoute = (invocation: 'disabled' | 'explicit-only' | 'auto') => ({
+      overrides: [{
+        capabilityId: 'computer-use',
+        source: { kind: 'user-mcp' as const, harness: 'claude-code', surface: 'mcp' as const, id: 'cua-driver' },
+        invocation,
+        replacement: { kind: 'cindy-host' as const, id: 'cindy_computer' },
+      }],
+    });
+    expect(buildClaudeDeniedMcpServers(userRoute('disabled'))).toEqual([{ serverName: 'cua-driver' }]);
+    expect(buildClaudeDeniedMcpServers(userRoute('explicit-only'))).toEqual([]);
+    expect(buildClaudeRemoteToolGuards(userRoute('explicit-only'))).toEqual([]);
+    expect(buildClaudeRemoteToolGuards(userRoute('disabled'))).toEqual([
+      expect.objectContaining({ toolNamePrefix: 'mcp__cua-driver__', invocation: 'disabled' }),
+    ]);
+  });
 });
 
 describe('buildClaudeRemoteToolGuards', () => {
@@ -349,6 +368,43 @@ describe('buildClaudeLocalToolGuardHooks', () => {
         { signal: new AbortController().signal },
       ),
     ).resolves.toEqual({ continue: true });
+  });
+
+  it('still intercepts a user-mcp route although the server is a user registration', async () => {
+    const preToolUse = buildClaudeLocalToolGuardHooks(
+      {
+        overrides: [{
+          capabilityId: 'computer-use',
+          source: { kind: 'user-mcp', harness: 'claude-code', surface: 'mcp', id: 'cua-driver' },
+          invocation: 'disabled',
+          replacement: { kind: 'cindy-host', id: 'cindy_computer' },
+        }],
+      },
+      () => '',
+      undefined,
+      () => new Set(['cua-driver']),
+    ).PreToolUse?.[0]?.hooks[0];
+    if (!preToolUse) throw new Error('expected local routing hook');
+    await expect(
+      preToolUse(
+        {
+          hook_event_name: 'PreToolUse',
+          session_id: 'session-user-driver',
+          transcript_path: '/tmp/transcript',
+          cwd: '/repo',
+          tool_name: 'mcp__cua-driver__run_steps',
+          tool_input: {},
+          tool_use_id: 'tool-user-driver',
+        },
+        'tool-user-driver',
+        { signal: new AbortController().signal },
+      ),
+    ).resolves.toMatchObject({
+      hookSpecificOutput: {
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('cindy_computer'),
+      },
+    });
   });
 
   it('does not intercept a user MCP whose id aliases the normalized plugin prefix', async () => {

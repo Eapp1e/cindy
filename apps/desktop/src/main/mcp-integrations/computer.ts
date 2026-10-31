@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync } from 'node:fs';
 import type { Stream } from 'node:stream';
-import { app } from 'electron';
+import { app, powerMonitor } from 'electron';
 import { hasProxyEnvConfig, parseOutboundProxyUrl } from '@cindy/anthropic-compat-proxy';
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -319,11 +319,23 @@ interface ProcessSnapshotEntry {
 }
 
 interface WindowIdentity {
-  kind: 'electron-dev' | 'node-dev' | 'browser' | 'terminal' | 'unknown';
+  kind: 'electron-dev' | 'node-dev' | 'browser' | 'terminal' | 'ios-simulator' | 'unknown';
   workspace_root?: string;
   confidence: number;
   labels: string[];
+  /**
+   * Model-facing routing facts about this target that the driver cannot tell
+   * from the window alone. Written from the 2026-10 audit: every simulator
+   * session tried synthetic clicks first, every Electron text session tried
+   * keystrokes first; both routes fail and the hint names the working one.
+   */
+  hints?: string[];
 }
+
+const IOS_SIMULATOR_INPUT_HINT =
+  'Synthetic clicks and keystrokes are not delivered to iOS Simulator / Device Hub windows (background, foreground or AX). Observe it here if needed, but drive it with `xcrun simctl` (launch, openurl, io screenshot) or AXe.';
+const WEB_CONTENT_TEXT_HINT =
+  'Electron / web content: type_text into its text fields is refused in background and unreliable in foreground; use set_value with the field\'s element_token.';
 
 interface ProcessSnapshotResult {
   processes: Map<number, ProcessSnapshotEntry>;
@@ -1599,10 +1611,20 @@ function inferWindowIdentity(
 
   let kind: WindowIdentity['kind'] = 'unknown';
   let confidence = 0;
-  if (/\b(electron|electron-forge)\b/.test(haystack)) {
+  const hints: string[] = [];
+  // Simulator first: its process line also mentions node/electron-free paths,
+  // and a Device Hub (Cindy's simulator surface) window must never fall into
+  // the generic branches below.
+  if (/simulator\.app|com\.apple\.(?:iphonesimulator|coresimulator)|\bdevice hub\b|\bsimulator\b/.test(haystack)) {
+    kind = 'ios-simulator';
+    confidence = 0.8;
+    labels.push('simulator');
+    hints.push(IOS_SIMULATOR_INPUT_HINT);
+  } else if (/\b(electron|electron-forge)\b/.test(haystack)) {
     kind = 'electron-dev';
     confidence = 0.75;
     labels.push('electron');
+    hints.push(WEB_CONTENT_TEXT_HINT);
   } else if (/\b(pnpm|npm|yarn|node|tsx|vite)\b/.test(haystack)) {
     kind = 'node-dev';
     confidence = 0.65;
@@ -1611,6 +1633,7 @@ function inferWindowIdentity(
     kind = 'browser';
     confidence = 0.7;
     labels.push('browser');
+    hints.push(WEB_CONTENT_TEXT_HINT);
   } else if (/\b(terminal|iterm|powershell|cmd\.exe|windows terminal|wt\.exe)\b/.test(haystack)) {
     kind = 'terminal';
     confidence = 0.7;
@@ -1624,6 +1647,7 @@ function inferWindowIdentity(
     workspace_root: workspaceRoot,
     confidence,
     labels,
+    ...(hints.length > 0 ? { hints } : {}),
   };
 }
 
@@ -2257,15 +2281,24 @@ async function callCuaMcpTool(
   if ((result as { isError?: unknown }).isError) {
     const text = firstTextFromMcpResult(result);
     const details = objectValue(parseMcpToolResult(result));
+    const message = typeof details?.message === 'string'
+      ? details.message
+      : (text ?? `cua-driver mcp tool ${name} returned an error`);
+    const reportedCode = typeof details?.code === 'string'
+      ? details.code
+      // The driver also reports snake_case codes (tool_invocation_failed);
+      // keep them instead of collapsing to the generic code.
+      : typeof details?.error === 'string' && /^[A-Za-z][A-Za-z0-9_]+$/.test(details.error)
+        ? details.error
+        : 'COMPUTER_DRIVER_ERROR';
     throw new ComputerDriverError(
-      typeof details?.message === 'string'
-        ? details.message
-        : (text ?? `cua-driver mcp tool ${name} returned an error`),
-      typeof details?.code === 'string'
-        ? details.code
-        : typeof details?.error === 'string' && /^[A-Z][A-Z0-9_]+$/.test(details.error)
-          ? details.error
-          : 'COMPUTER_DRIVER_ERROR',
+      message,
+      // cua-driver 0.37 reports a missing app as the generic tool_invocation_failed;
+      // older drivers named it. Keep the stable name the MCP recovery and smoke rely on.
+      name === 'launch_app' && reportedCode !== 'APP_NOT_INSTALLED'
+        && /^No installed macOS app found (?:for |with )?name\b/i.test(message)
+        ? 'APP_NOT_INSTALLED'
+        : reportedCode,
       getComputerTool(name)?.readOnly !== true && (
         details?.effect === 'partial' || details?.effect === 'unverifiable' ||
         details?.code === 'type_text_incomplete'
@@ -3492,6 +3525,99 @@ export async function grantComputerDriverPermissions(
 // Own sequential primitives retain their observations; overlapping reads do not.
 const inputObservations = new Map<string, { windows: Map<string, number | symbol>; requiresObservation: boolean }>();
 
+/**
+ * Foreground delivery shares the keyboard and mouse with whoever is at this
+ * Mac. The 2026-10 audit found eight sessions where the Agent's foreground
+ * input landed while the person was typing in Slack / Chrome / another Cindy;
+ * the model only noticed from a later screenshot. Before a foreground action,
+ * treat any system input newer than the Agent's own last dispatch as a person
+ * and refuse with a structured code instead of competing for focus.
+ *
+ * `powerMonitor.getSystemIdleTime()` is whole seconds since the last HID
+ * event, including events the Agent itself posted, so the Agent's dispatch
+ * time is subtracted: input is attributed to a person only when it is newer
+ * than that by more than the clock granularity.
+ */
+export const USER_INPUT_ACTIVE_WINDOW_MS = 3_000;
+/**
+ * Slack after the Agent's own dispatch returned during which a system input is
+ * still taken as the Agent's: the idle clock is floored to whole seconds and the
+ * driver delivers a dispatched event up to about a second later (2026-10-31
+ * smoke run: a background click dispatched 2.2 s earlier was read as "input 1 s
+ * ago" and refused the next foreground action).
+ */
+const AGENT_INPUT_ATTRIBUTION_SLACK_MS = 2_500;
+let lastAgentInputEndedAt = 0;
+let agentInputsInFlight = 0;
+let screenLockedByEvent: boolean | undefined;
+let powerMonitorHooked = false;
+
+/** Called around every non-read driver dispatch, so its events are attributed to the Agent. */
+function trackAgentInputDispatch<T>(run: () => Promise<T>): Promise<T> {
+  agentInputsInFlight += 1;
+  return run().finally(() => {
+    agentInputsInFlight -= 1;
+    lastAgentInputEndedAt = Date.now();
+  });
+}
+
+export function resetDesktopInputGuardStateForTests(): void {
+  lastAgentInputEndedAt = 0;
+  agentInputsInFlight = 0;
+  screenLockedByEvent = undefined;
+}
+
+function hookPowerMonitor(): void {
+  if (powerMonitorHooked) return;
+  powerMonitorHooked = true;
+  try {
+    powerMonitor.on('lock-screen', () => { screenLockedByEvent = true; });
+    powerMonitor.on('unlock-screen', () => { screenLockedByEvent = false; });
+  } catch {
+    // powerMonitor is unavailable before app ready in some test harnesses; the
+    // idle-state probe below still answers.
+  }
+}
+
+/** True when the screen is locked, from events when seen, else the idle-state probe. */
+export function isDesktopScreenLocked(): boolean {
+  hookPowerMonitor();
+  if (screenLockedByEvent !== undefined) return screenLockedByEvent;
+  try {
+    return powerMonitor.getSystemIdleState(1) === 'locked';
+  } catch {
+    return false;
+  }
+}
+
+/** Milliseconds since the last system HID input not explained by the Agent's own dispatch, or null when unknown. */
+function msSinceForeignDesktopInput(now = Date.now()): number | null {
+  let idleSeconds: number;
+  try {
+    idleSeconds = powerMonitor.getSystemIdleTime();
+  } catch {
+    return null;
+  }
+  if (!Number.isFinite(idleSeconds) || idleSeconds < 0) return null;
+  // Another Agent input is still being delivered: its events are ours.
+  if (agentInputsInFlight > 0) return Number.POSITIVE_INFINITY;
+  // The idle clock is floored, so the input happened no earlier than this.
+  const earliestInputAt = now - (idleSeconds + 1) * 1000;
+  if (earliestInputAt <= lastAgentInputEndedAt + AGENT_INPUT_ATTRIBUTION_SLACK_MS) return Number.POSITIVE_INFINITY;
+  return idleSeconds * 1000;
+}
+
+/** Refuse foreground delivery while a person is using this computer. */
+export function assertNoRecentUserInput(name: ComputerMcpToolName, args: Record<string, unknown>): void {
+  if (getComputerTool(name)?.readOnly === true || args.delivery_mode !== 'foreground') return;
+  const since = msSinceForeignDesktopInput();
+  if (since === null || since >= USER_INPUT_ACTIVE_WINDOW_MS) return;
+  throw new ComputerDriverError(
+    `Someone is using this computer (keyboard or mouse input ${Math.max(0, Math.round(since / 100) / 10)}s ago). Foreground input was not sent so it cannot land in their window. Wait until they stop, use background delivery or set_value, or ask them before taking the foreground.`,
+    'USER_INPUT_ACTIVE',
+  );
+}
+
 export async function callComputerDriverTool(
   name: ComputerMcpToolName,
   args: Record<string, unknown>,
@@ -3536,6 +3662,7 @@ export async function callComputerDriverTool(
     if (desktopInputRevision() !== revision) {
       throw new ComputerDriverError('Remote desktop input arrived. Agent yielded before further input; previous input may have completed. Get fresh window state before continuing.', 'DESKTOP_INPUT_YIELDED');
     }
+    assertNoRecentUserInput(name, args);
     if (isHumanDesktopInputActive()) {
       throw new ComputerDriverError('Remote desktop input is active. Yield briefly, then get fresh window state before retrying; the remote connection can stay open.', 'DESKTOP_INPUT_BUSY');
     }
@@ -3597,7 +3724,8 @@ async function callComputerDriverToolImpl(
           observation.requiresObservation = true;
           observation.windows.clear();
         }
-        return invoke();
+        // Only input moves the system idle clock; a read must not mask a person's input.
+        return trackAgentInputDispatch(invoke);
       }, { signal, assertCurrent: assertActive });
     return name === 'list_windows' ? enrichAndFilterListWindowsResult(result, rawArgs) : result;
   } catch (err) {
@@ -3765,6 +3893,7 @@ export function getComputerMcpDeps(options: ComputerMcpDepsOptions = {}): Comput
     },
     // Loaded on use: the 代输入 driver brings the native input helpers with it.
     isSecureTarget: async (target) => (await import('../input-handoff/macDriver.js')).isSecureInputTarget(target),
+    describeDesktop: async () => ({ screen_locked: isDesktopScreenLocked() }),
     logger,
   };
 }

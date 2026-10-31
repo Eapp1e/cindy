@@ -95,9 +95,20 @@ vi.mock('../../maker-host/outbound-proxy-resolver.js', () => ({
   resolveDesktopOutboundProxy: resolveDesktopOutboundProxyMock,
 }));
 
+const powerMonitorState = vi.hoisted(() => ({
+  idleSeconds: 3600,
+  idleState: 'active' as 'active' | 'idle' | 'locked' | 'unknown',
+  listeners: new Map<string, () => void>(),
+}));
+
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn((name: string) => (name === 'temp' ? '/tmp' : '/Users/tester')),
+  },
+  powerMonitor: {
+    getSystemIdleTime: () => powerMonitorState.idleSeconds,
+    getSystemIdleState: () => powerMonitorState.idleState,
+    on: (event: string, listener: () => void) => { powerMonitorState.listeners.set(event, listener); },
   },
 }));
 
@@ -121,6 +132,7 @@ import {
   pickLatestCuaDriverVersion,
   resetComputerDriverPermissionProbeCacheForTests,
   resetAtMentionWindowCacheForTests,
+  resetDesktopInputGuardStateForTests,
   resetComputerDriverUpdateStateForTests,
   runProcessWithActivityTimeout,
   sampleInstallProcessTree,
@@ -641,6 +653,27 @@ describe('computer mcp integration', () => {
     expect(payload.query).toBeUndefined();
     expect(payload.workspace_root).toBeUndefined();
     expect(payload.process_name).toBeUndefined();
+  });
+
+  // CU-016 (2026-10 audit): nine simulator sessions tried synthetic clicks first;
+  // none worked. The identity names the route that does, before any action.
+  it('labels iOS Simulator / Device Hub windows and names the simctl route', async () => {
+    mcpCallToolMock.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '{"ok":true,"windows":[{"pid":77,"window_id":9,"app_name":"Simulator","title":"iPhone 17 Pro"},{"pid":88,"window_id":10,"app_name":"Device Hub","title":"iPhone"},{"pid":99,"window_id":11,"app_name":"Google Chrome","title":"Docs"}]}' }],
+    });
+    mockProcessSnapshotSpawn([
+      { pid: 77, name: 'Simulator', command: '/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator' },
+      { pid: 88, name: 'Device Hub', command: '/Applications/Cindy.app/Contents/Frameworks/Device Hub.app/Contents/MacOS/Device Hub' },
+      { pid: 99, name: 'Google Chrome', command: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' },
+    ]);
+
+    const result = await callComputerDriverTool('list_windows', { session: 'sim' }, { sessionId: 'sim' }) as {
+      windows: Array<{ pid: number; identity: { kind: string; hints?: string[] } }>;
+    };
+    const byPid = Object.fromEntries(result.windows.map((window) => [window.pid, window.identity]));
+    expect(byPid[77]).toMatchObject({ kind: 'ios-simulator', hints: [expect.stringContaining('xcrun simctl')] });
+    expect(byPid[88]).toMatchObject({ kind: 'ios-simulator', hints: [expect.stringContaining('xcrun simctl')] });
+    expect(byPid[99]).toMatchObject({ kind: 'browser', hints: [expect.stringContaining('set_value')] });
   });
 
   it('filters list_windows locally by process name', async () => {
@@ -1532,6 +1565,33 @@ describe('computer mcp integration', () => {
     await callComputerDriverTool('drag', args, { sessionId: 'legacy-drag' });
     expect(mcpCallToolMock).toHaveBeenCalledTimes(1);
     expect(mcpCallToolMock.mock.calls[0]![0].arguments).toEqual(args);
+  });
+
+  // cua-driver 0.37 stopped naming the missing-app failure (2026-10-31 smoke run:
+  // `tool_invocation_failed` + "No installed macOS app found …"); the MCP recovery
+  // path and the smoke keep relying on the stable name.
+  it.each(['tool_invocation_failed', undefined])(
+    'names a missing app APP_NOT_INSTALLED when the driver reports it as %s', async (error) => {
+      mcpCallToolMock.mockResolvedValue({
+        isError: true,
+        content: [{ type: 'text', text: "No installed macOS app found for name 'Example'." }],
+        structuredContent: { ...(error ? { error } : {}), name: 'Example' },
+      });
+      await expect(
+        callComputerDriverTool('launch_app', { name: 'Example' }, { sessionId: 'app-error-generic' }),
+      ).rejects.toMatchObject({ code: 'APP_NOT_INSTALLED' });
+    },
+  );
+
+  it('keeps other snake_case driver codes instead of the generic code', async () => {
+    mcpCallToolMock.mockResolvedValue({
+      isError: true,
+      content: [{ type: 'text', text: 'step 1 of 1 failed' }],
+      structuredContent: { error: 'tool_invocation_failed' },
+    });
+    await expect(
+      callComputerDriverTool('get_window_state', { pid: 1, window_id: 2 }, { sessionId: 'snake-code' }),
+    ).rejects.toMatchObject({ code: 'tool_invocation_failed' });
   });
 
   it('preserves a named driver error stored in the error field', async () => {
@@ -4303,6 +4363,69 @@ function mockRefsThenReleaseFetch() {
       }),
     });
 }
+
+/**
+ * CU-014 (2026-10 audit): foreground input competed with the person at the
+ * keyboard in eight sessions. Gap: only remote-desktop input yielded. Tier: unit.
+ */
+describe('foreground input while the person is using this computer', () => {
+  const context = { sessionId: 'user-active' };
+  const target = { pid: 123, window_id: 7 };
+  beforeEach(async () => {
+    await cleanupAllComputerDriverSessions();
+    resetDesktopInputGuardStateForTests();
+    mcpCallToolMock.mockReset().mockResolvedValue({ structuredContent: { ok: true, effect: 'confirmed' } });
+    powerMonitorState.idleSeconds = 3600;
+    powerMonitorState.idleState = 'active';
+  });
+
+  it('refuses foreground delivery after recent system input and keeps background delivery', async () => {
+    await callComputerDriverTool('get_window_state', target, context);
+    powerMonitorState.idleSeconds = 0;
+    await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'foreground' }, context))
+      .rejects.toMatchObject({ code: 'USER_INPUT_ACTIVE' });
+    expect(mcpCallToolMock.mock.calls.filter(([call]) => call.name === 'click')).toHaveLength(0);
+    await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'background' }, context))
+      .resolves.toBeDefined();
+    await expect(callComputerDriverTool('get_window_state', target, context)).resolves.toBeDefined();
+  });
+
+  it('attributes input right after its own dispatch to the Agent, not the person', async () => {
+    vi.useFakeTimers();
+    try {
+      await callComputerDriverTool('get_window_state', target, context);
+      await expect(callComputerDriverTool('type_text', { ...target, text: 'hi', delivery_mode: 'foreground' }, context))
+        .resolves.toBeDefined();
+      // The driver's own keystrokes reset the system idle clock; the clock is
+      // floored, so "1 s ago" read 2.2 s after our dispatch is still ours.
+      powerMonitorState.idleSeconds = 0;
+      await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'foreground' }, context))
+        .resolves.toBeDefined();
+      vi.advanceTimersByTime(2_200);
+      powerMonitorState.idleSeconds = 1;
+      await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'foreground' }, context))
+        .resolves.toBeDefined();
+      // Input well after the last dispatch is a person again.
+      vi.advanceTimersByTime(10_000);
+      powerMonitorState.idleSeconds = 1;
+      await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'foreground' }, context))
+        .rejects.toMatchObject({ code: 'USER_INPUT_ACTIVE' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports the lock state from power events, else from the idle-state probe', async () => {
+    const deps = getComputerMcpDeps();
+    powerMonitorState.idleState = 'locked';
+    await expect(deps.describeDesktop?.()).resolves.toEqual({ screen_locked: true });
+    powerMonitorState.listeners.get('unlock-screen')?.();
+    await expect(deps.describeDesktop?.()).resolves.toEqual({ screen_locked: false });
+    powerMonitorState.listeners.get('lock-screen')?.();
+    await expect(deps.describeDesktop?.()).resolves.toEqual({ screen_locked: true });
+    powerMonitorState.listeners.get('unlock-screen')?.();
+  });
+});
 
 describe('computer driver update check', () => {
   beforeEach(() => {
