@@ -2011,6 +2011,39 @@ describe('createComputerMcpServer desktop guards', () => {
   });
 });
 
+describe('unavailable observations get window state without an identity error', () => {
+  // Review (#8227 round 14): a minimized or other-Space window still has an AX tree, so the
+  // failed capture carries no window_id_not_found; window_not_on_screen must still be reachable.
+  const captureFailed = { degraded: true, elements: [], tree_markdown: '', screenshot_frame_valid: false,
+    screenshot_error: { code: 'px_capture_unavailable' } };
+
+  it('names window_not_on_screen for a capture failure of a window that exists off screen', async () => {
+    const callTool = vi.fn(async (name: string) => name === 'list_windows'
+      ? { windows: [{ pid: 7, window_id: 9, app_name: 'Electron', is_on_screen: false, process: { command: 'x --secret' } }] }
+      : captureFailed);
+    const h = await makeHarness({ getStatus: vi.fn(), callTool, describeDesktop: async () => ({ screen_locked: false }) }, { sessionId: 'offscreen' });
+    try {
+      const result = textPayload(await h.client.callTool({ name: 'call_tool', arguments: {
+        name: 'get_window_state', args: { pid: 7, window_id: 9, include_screenshot: true },
+      } })) as { reason?: string };
+      expect(result.reason).toBe('window_not_on_screen');
+      expect(JSON.stringify(result)).not.toContain('--secret');
+    } finally { await h.cleanup(); }
+  });
+
+  it('skips the extra window discovery when the screen is locked', async () => {
+    const callTool = vi.fn(async (_name: string) => captureFailed);
+    const h = await makeHarness({ getStatus: vi.fn(), callTool, describeDesktop: async () => ({ screen_locked: true }) }, { sessionId: 'locked-skip' });
+    try {
+      const result = textPayload(await h.client.callTool({ name: 'call_tool', arguments: {
+        name: 'get_window_state', args: { pid: 7, window_id: 9, include_screenshot: true },
+      } })) as { reason?: string };
+      expect(result.reason).toBe('screen_locked');
+      expect(callTool.mock.calls.map(([name]) => name)).toEqual(['get_window_state']);
+    } finally { await h.cleanup(); }
+  });
+});
+
 describe('thrown window identity failures carry the same reason', () => {
   // 2026-10-31 dev-build run: a dead window_id made the driver throw
   // window_id_not_found, which skipped the CUA_UNAVAILABLE classification.

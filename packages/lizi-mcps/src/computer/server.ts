@@ -686,10 +686,19 @@ export function createComputerMcpServer(
         isUnavailableWindowObservation(data, parsedData)
       ) {
         invalidateWindowSnapshot(name, parsedData, sessionId);
-        const recovery = isWindowIdentityFailure(data)
-          ? await rediscoverWindow(parsedData, { ...callContext, signal })
-          : undefined;
-        const unavailable = await classifyUnavailableObservation(data, recovery);
+        // A locked screen explains the failure by itself; asking the driver for windows then
+        // only adds a second failing call. Otherwise every unavailable observation of a known
+        // window gets compact window state, so "not on screen" is reachable without an
+        // identity error (a minimized or other-Space window still has an AX tree).
+        const desktop = await deps.describeDesktop?.().catch(() => undefined);
+        const screenLocked = desktop?.screen_locked === true;
+        const recovery =
+          !screenLocked &&
+          (isWindowIdentityFailure(data) ||
+            (typeof parsedData.pid === 'number' && typeof parsedData.window_id === 'number'))
+            ? await rediscoverWindow(parsedData, { ...callContext, signal })
+            : undefined;
+        const unavailable = await classifyUnavailableObservation(data, recovery, screenLocked);
         return textResult(
           {
             ok: false,
@@ -787,7 +796,11 @@ export function createComputerMcpServer(
           : undefined;
       // A thrown window-identity failure gets the same reason as a degraded read.
       const unresolvedReason = recovery
-        ? await classifyUnavailableObservation(undefined, recovery)
+        ? await classifyUnavailableObservation(
+            undefined,
+            recovery,
+            (await deps.describeDesktop?.().catch(() => undefined))?.screen_locked === true,
+          )
         : undefined;
       const shouldObserveUnknownAction =
         !recovery &&
@@ -987,9 +1000,9 @@ export function createComputerMcpServer(
   async function classifyUnavailableObservation(
     data: unknown,
     recovery: { requested_target: { window_id?: unknown } ; discovery: { ok: boolean; data?: unknown } } | undefined,
+    screenLocked: boolean,
   ): Promise<{ reason: 'screen_locked' | 'window_not_on_screen' | 'window_gone' | 'driver_error'; hint: string }> {
-    const desktop = await deps.describeDesktop?.().catch(() => undefined);
-    if (desktop?.screen_locked) {
+    if (screenLocked) {
       return {
         reason: 'screen_locked',
         hint: 'The screen is locked, so no window can be observed or operated. Do not retry in a loop: tell the person this step needs the screen unlocked, then call get_window_state again after they unlock.',

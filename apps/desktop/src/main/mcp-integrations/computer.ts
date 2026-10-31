@@ -3570,6 +3570,12 @@ const HID_SYNTHESIZING_TOOLS: ReadonlySet<string> = new Set([
   'click', 'double_click', 'right_click', 'drag', 'type_text', 'press_key', 'hotkey', 'scroll',
 ]);
 
+function isRefusedDriverResult(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false;
+  const candidate = result as { effect?: unknown; ok?: unknown };
+  return candidate.effect === 'refused' || candidate.ok === false;
+}
+
 /**
  * Called around every non-read driver dispatch. Only an input that may really
  * have produced HID events is attributed to the Agent: the tool must synthesize
@@ -3583,7 +3589,9 @@ async function trackAgentInputDispatch<T>(name: string, run: () => Promise<T>): 
   let attributable = false;
   try {
     const result = await run();
-    attributable = true;
+    // A driver refusal comes back as a normal result (`effect: "refused"`, e.g.
+    // background_unavailable) and sent nothing, so it must not take the credit either.
+    attributable = !isRefusedDriverResult(result);
     return result;
   } catch (err) {
     attributable = (err as { outcomeUnknown?: unknown } | null)?.outcomeUnknown === true;

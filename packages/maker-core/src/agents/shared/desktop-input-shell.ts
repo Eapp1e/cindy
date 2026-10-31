@@ -21,26 +21,26 @@ const SHELL_DESKTOP_INPUT_PATTERNS: readonly RegExp[] = [
   // Mutating verbs only: keyboard / pointer events and writes through the accessibility
   // tree (`set value of`, `perform action`, `set selected`, `increment`, `decrement`).
   // `get value of …` and process / window queries stay readable.
-  /\bSystem Events\b[\s\S]{0,400}?\b(?:keystroke|key code|key down|key up|click|set\s+(?:the\s+)?value|perform\s+action|set\s+selected|increment|decrement)\b/i,
-  /\bosascript\b[\s\S]{0,400}?\b(?:keystroke|key code|key down|key up)\b/i,
+  /\bSystem Events\b[\s\S]*?\b(?:keystroke|key code|key down|key up|click|set\s+(?:the\s+)?value|perform\s+action|set\s+selected|increment|decrement)\b/i,
+  /\bosascript\b[\s\S]*?\b(?:keystroke|key code|key down|key up)\b/i,
   // macOS third-party click / key CLIs.
   // Optionally path-qualified (/opt/homebrew/bin/cliclick); the name must end the
   // token so a file such as docs/cliclick-notes.md is not a command.
-  /(?:^|[\s|&;(`$'"])(?:\S*\/)?cliclick(?=[\s'"]|$)/i,
+  /(?:^|[\s|&;(`$'"=])(?:\S*\/)?cliclick(?=[\s'"]|$)/i,
   // CoreGraphics event synthesis from inline Swift / Python / JXA.
   /\bCGEventPost\b|\bCGEventCreate(?:Mouse|Keyboard|ScrollWheel)Event\b|\bCGEvent\s*\(\s*(?:mouseEventSource|keyboardEventSource|scrollWheelEvent2Source)/i,
   // Linux / Windows equivalents.
-  /(?:^|[\s|&;(`$'"])(?:\S*\/)?(?:xdotool|ydotool|xte)\s+(?:key|type|click|mousemove|mousedown|mouseup)\b/i,
+  /(?:^|[\s|&;(`$'"=])(?:\S*\/)?(?:xdotool|ydotool|xte)\s+(?:key|type|click|mousemove|mousedown|mouseup)\b/i,
   /\bSendKeys\b|\bSendInput\b|\bmouse_event\b|\bkeybd_event\b/i,
   // Library and executable entry points, one inventory so the list is complete by
   // construction rather than by review rounds: Python (pyautogui, pynput,
   // pydirectinput), Node (robotjs, nut-js), Wayland / X11 (wtype, dotool, xvkbd),
   // Windows (AutoHotkey, nircmd).
   /\b(?:pyautogui|pynput|pydirectinput|robotjs|nut-js|autohotkey)\b|@nut-tree\b/i,
-  /(?:^|[\s|&;(`$'"])(?:\S*\/)?(?:wtype|dotoolc?|xvkbd|nircmdc?)(?:\.exe)?(?=[\s'"]|$)/i,
+  /(?:^|[\s|&;(`$'"=])(?:\S*\/)?(?:wtype|dotoolc?|xvkbd|nircmdc?)(?:\.exe)?(?=[\s'"]|$)/i,
   // The driver binary itself: same engine, but the native CLI / MCP skips the
   // Cindy session, guards and result verification.
-  /(?:^|[\s|&;(`$/'"])cua-driver\s+(?!--version\b|version\b|status\b|health\b)[a-z]/i,
+  /(?:^|[\s|&;(`$/'"=])cua-driver\s+(?!--version\b|version\b|status\b|health\b)[a-z]/i,
 ];
 
 const READ_ONLY_HEADS: ReadonlySet<string> = new Set([
@@ -82,6 +82,8 @@ const PACKAGE_MANAGERS: ReadonlySet<string> = new Set([
   "pnpm",
   "yarn",
 ]);
+const EXECUTING_FLAGS =
+  /^--(?:pre|pre-glob|hostname-bin|pager|ext-diff|textconv|compress-program|exec-path|exec|upload-pack|receive-pack)(?:=|$)/;
 const READ_ONLY_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "grep",
   "log",
@@ -113,12 +115,29 @@ function isReadOnlySegment(segment: string): boolean {
     .replace(/^[({\s]+/, "")
     .split(/\s+/);
   let index = 0;
+  let hasEnvAssignment = false;
   while (
     index < tokens.length &&
     (/^\w+=\S*$/.test(tokens[index]!) || COMMAND_WRAPPERS.has(tokens[index]!))
-  )
+  ) {
+    // LESSOPEN, PAGER, GIT_EXTERNAL_DIFF … run programs: a prefixed assignment is never read-only.
+    if (/^\w+=/.test(tokens[index]!)) hasEnvAssignment = true;
     index += 1;
+  }
+  if (hasEnvAssignment) return false;
   const head = (tokens[index] ?? "").split("/").pop() ?? "";
+  // A read-only head that is told to run another program (`rg --pre cliclick`, `git -c
+  // core.pager=…`, `sort --compress-program=…`) executes that program.
+  if (
+    tokens
+      .slice(index + 1)
+      .some(
+        (token) =>
+          EXECUTING_FLAGS.test(token) ||
+          (head === "git" && /^-c(?:$|\S)/.test(token) && token !== "-C"),
+      )
+  )
+    return false;
   if (READ_ONLY_HEADS.has(head)) return true;
   if (head === "cat") return !/>|<</.test(segment);
   // sed is read-only only in one strict shape: `-n`, no `-i` / `-e` / `-f` / `-s` /

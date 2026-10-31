@@ -4485,6 +4485,18 @@ describe('foreground input while the person is using this computer', () => {
     }
   });
 
+  // Review (#8227 round 14): a driver refusal returns as a normal result and sent nothing.
+  it('does not attribute later input to a click the driver refused', async () => {
+    await callComputerDriverTool('get_window_state', target, context);
+    mcpCallToolMock.mockResolvedValue({ structuredContent: { ok: true, effect: 'refused', errorCode: 'background_unavailable' } });
+    await callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'background' }, context);
+    mcpCallToolMock.mockResolvedValue({ structuredContent: { ok: true, effect: 'confirmed' } });
+    await callComputerDriverTool('get_window_state', target, context);
+    powerMonitorState.idleSeconds = 0;
+    await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'foreground' }, context))
+      .rejects.toMatchObject({ code: 'USER_INPUT_ACTIVE' });
+  });
+
   it('does not attribute input to a foreground action the guard refused', async () => {
     await callComputerDriverTool('get_window_state', target, context);
     powerMonitorState.idleSeconds = 0;

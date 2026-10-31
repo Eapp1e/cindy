@@ -43,6 +43,15 @@ describe("isShellDesktopInputCommand", () => {
     `xvkbd -text x`,
     `nircmd.exe sendkeypress ctrl+v`,
     `AutoHotkey.exe click.ahk`,
+    // review round 14: a read-only head told to run another program, or an env assignment that does
+    `printf x > 'c:100,100'; rg --pre cliclick z 'c:100,100'`,
+    `rg --pre=cliclick z f`,
+    `git -c core.pager='cliclick c:1,1' log`,
+    `sort --compress-program=cliclick f`,
+    `LESSOPEN='|cliclick c:1,1 %s' less f`,
+    `GIT_PAGER='xdotool click 1' git log`,
+    // review round 14: no distance limit between the wrapper and the verb
+    `osascript -e 'tell application "System Events"${" ".repeat(500)}\n keystroke "x"'`,
     // review round 10: line continuations are deleted by the shell before it parses
     `xdotool \\\nclick 1`,
     `/Users/dash/.local/bin/cua-driver \\\n  click --pid 1 --x 5 --y 5`,
