@@ -138,7 +138,9 @@ describe("isShellDesktopInputCommand", () => {
     expect(isShellDesktopInputCommand(command)).toBe(false);
   });
 
-  it("routes synthesized input to the reviewer instead of auto-approving it", () => {
+  // Not a classifier rule of its own: the commands are simply never allowlisted, so they reach
+  // the reviewer, whose policy (continuation-policy.ts) says to block them on this computer.
+  it("never auto-approves synthesized input", () => {
     expect(
       classifyShellCommand(
         `osascript -e 'tell application "System Events" to keystroke "a"'`,

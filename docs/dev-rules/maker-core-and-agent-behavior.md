@@ -477,8 +477,10 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
   关着时绕过它；不得用它关掉无关的用户服务器。桌面键鼠的另一条绕行路径（shell 模拟
   按键：osascript keystroke／cliclick／CGEvent／cua-driver CLI）由
   `packages/maker-core/src/agents/shared/desktop-input-shell.ts` 一份判定覆盖：Claude PreToolUse
-  守卫直接拒绝（完全访问档同样生效），Ask／Auto 档三套 harness 经共用审核核心交 reviewer 拦下；
-  Pi 完全访问档按其非退化红线不加拦截。
+  守卫直接拒绝（完全访问档同样生效，仅本地运行时：SSH 远端的本地钩子不会跨 RPC 生效，远端桌面
+  工具不受影响）；Ask／Auto 档由共用审阅策略（`continuation-policy.ts`，写明只针对运行 Cindy 的这台
+  电脑）让 reviewer 拦下。Codex 完全访问档（`approvalPolicy: never`，宿主没有拦截点）与 Pi 完全访问档
+  （非退化红线）不加拦截。
 - Cindy 的目标模式由 `goal-host` 统一管理续跑、预算与暂停／恢复。Codex 创建和恢复线程时
   使用会话级 `features.goals=false`，避免模型另建原生目标，形成绕过宿主调度与来源标记的
   第二套循环；不写用户的全局 Codex 配置。不能仅把无来源事件改判为目标事件，否则用户

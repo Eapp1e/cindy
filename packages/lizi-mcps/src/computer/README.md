@@ -48,9 +48,11 @@ verification. Cindy keeps them out of reach: the user's own `cua-driver` / `cua`
 MCP registrations are always denied for Claude Code (`maker-host/capability-routing.ts`;
 Cindy's Computer Use setting is the one switch for driving this desktop, and a
 raw driver server would bypass it exactly when it is off), shell-synthesized
-input is denied by a Claude PreToolUse guard and routed to the reviewer under
-Auto for every harness (`maker-core/agents/shared/desktop-input-shell.ts`). A
-refusal is a result to report. Reuse discovered process/window identities; do not guess bundle IDs.
+input is denied by a Claude PreToolUse guard (local runtimes only; full-access
+included) and, under Ask / Auto, by the shared reviewer policy for the computer
+running Cindy (`maker-core/agents/shared/desktop-input-shell.ts`,
+`continuation-policy.ts`). Codex full access has no host interception point and
+Pi full access is left native. A refusal is a result to report. Reuse discovered process/window identities; do not guess bundle IDs.
 Foreground input already activates its target, so a preceding `bring_to_front`
 is usually redundant.
 

@@ -47,7 +47,6 @@ import {
   SENSITIVE_CREDENTIAL_PATH_PATTERNS,
 } from './sensitive-credential-paths.js';
 import { parseShellInputRedirections } from './shell-input-redirections.js';
-import { isShellDesktopInputCommand } from './desktop-input-shell.js';
 
 export { isSensitiveCredentialPath } from './sensitive-credential-paths.js';
 
@@ -1684,7 +1683,7 @@ const ENV_VARS_EXECUTING_THEIR_VALUE = 'LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|DYLD
 const ENV_EXECUTION_ASSIGNMENT = new RegExp(`(?:^|[\\s|&;(])(?:${ENV_VARS_EXECUTING_THEIR_VALUE})=`);
 const ENV_EXECUTION_NAME = new RegExp(`^(?:${ENV_VARS_EXECUTING_THEIR_VALUE})$`);
 
-const REVIEW_REQUIRED_PATTERNS: ReadonlyArray<Pick<RegExp, 'test'>> = [
+const REVIEW_REQUIRED_PATTERNS: readonly RegExp[] = [
   /\brm\b[^|;&]*(?:\s-\w*[rRfF]|\s--(?:recursive|force|dir))/, // rm 递归/强制删除
   /\bfind\b[^|;&]*\s-delete\b/,                          // find -delete 批量删除
 
@@ -1693,9 +1692,6 @@ const REVIEW_REQUIRED_PATTERNS: ReadonlyArray<Pick<RegExp, 'test'>> = [
   /\bgit\b[^|;&]*\bpush\b[^|;&]*(?:--force\b|--force-with-lease\b|\s-f\b|\+)/, // 强推
   /\bgit\b[^|;&]*\breset\b[^|;&]*--hard/,                 // git reset --hard
   /\bgit\b[^|;&]*\bclean\b[^|;&]*\s-\w*f/,                // git clean -f
-  // Shell 模拟桌面键鼠(osascript keystroke / cliclick / CGEvent / xdotool / cua-driver CLI):
-  // 有更安全的做法(cindy_computer),reviewer 应 block 并指明;见 desktop-input-shell.ts。
-  { test: isShellDesktopInputCommand },
 ];
 
 /** 命令替换 / 进程替换:参数里塞 `$(...)` / 反引号 / `<(...)` / `>(...)`,可绕过静态判定 → 一律升级。 */
