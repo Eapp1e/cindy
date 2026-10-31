@@ -121,19 +121,12 @@ function isReadOnlySegment(segment: string): boolean {
   const head = (tokens[index] ?? "").split("/").pop() ?? "";
   if (READ_ONLY_HEADS.has(head)) return true;
   if (head === "cat") return !/>|<</.test(segment);
-  // `sed -n '/CGEventPost/p' file` only prints; `-i` / `--in-place` and the `w` / `e`
-  // commands write or execute, so those stay in scope.
-  if (head === "sed") {
-    const args = tokens.slice(index + 1);
-    const quiet = args.some((token) => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(token));
-    const writes = args.some(
-      (token) =>
-        /^-[a-zA-Z]*i/.test(token) ||
-        token === "--in-place" ||
-        token.startsWith("--in-place="),
-    );
-    return quiet && !writes && !/(?:^|[;{\s'"/])[we]\s/.test(args.join(" "));
-  }
+  // sed is read-only only in one strict shape: `-n`, no `-i` / `-e` / `-f` / `-s` /
+  // `--sandbox` surprises, and a script made of nothing but print-style commands
+  // (`p P d D q Q n N =`) with line numbers, ranges and /regex/ addresses. Anything
+  // else (`1e cmd`, `w file`, `r file`, `s///e`, `y`, `a` `i` `c`) is not read-only,
+  // so GNU sed's command-executing forms never need to be recognised one by one.
+  if (head === "sed") return isPrintOnlySed(shellWords(segment).slice(1));
   if (PACKAGE_MANAGERS.has(head)) {
     const sub =
       tokens.slice(index + 1).find((token) => !token.startsWith("-")) ?? "";
@@ -225,6 +218,69 @@ export function splitShellSegments(command: string): string[] {
   return segments;
 }
 
+/** Quote-aware words of one segment (quotes removed); enough to read a sed invocation. */
+function shellWords(segment: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let started = false;
+  for (let index = 0; index < segment.length; index += 1) {
+    const ch = segment[index]!;
+    if (ch === "\\" && quote !== "'") {
+      current += segment[index + 1] ?? "";
+      index += 1;
+      started = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started) words.push(current);
+      current = "";
+      started = false;
+      continue;
+    }
+    current += ch;
+    started = true;
+  }
+  if (started) words.push(current);
+  return words;
+}
+
+/** `sed -n '<print-only script>' file…` — see the note at the sed branch. */
+function isPrintOnlySed(args: string[]): boolean {
+  const options = args.filter(
+    (word) => word.startsWith("-") && word.length > 1,
+  );
+  // Only short, letter-only option clusters containing n; -e / -f / -i / -s / -z etc. and
+  // every long option (--expression, --in-place, --sandbox, --file …) disqualify.
+  if (
+    options.length === 0 ||
+    !options.every(
+      (word) =>
+        (/^-[nEr]+$/.test(word) && /n/.test(word)) ||
+        word === "-E" ||
+        word === "-r",
+    )
+  )
+    return false;
+  const operands = args.filter(
+    (word) => !(word.startsWith("-") && word.length > 1),
+  );
+  const script = operands[0];
+  if (script === undefined) return false;
+  const withoutRegex = script.replace(/\/(?:\\.|[^/\\])*\//g, "");
+  return /^[\s0-9,;$!{}pPdDqQnN=~+\-^]*$/.test(withoutRegex);
+}
+
 const SUBSTITUTION_RE =
   /\$\(([^()]*(?:\([^()]*\)[^()]*)*)\)|`([^`]*)`|[<>]\(([^()]*)\)/g;
 
@@ -243,6 +299,9 @@ function substitutionBodies(segment: string): string[] {
 /** True when a shell command synthesizes desktop keyboard or mouse input. */
 export function isShellDesktopInputCommand(command: string): boolean {
   if (typeof command !== "string" || command.length === 0) return false;
+  // Shell semantics: an unquoted backslash-newline is deleted before parsing, so
+  // `xdotool \⏎click 1` is `xdotool click 1`.
+  command = command.replace(/\\\r?\n/g, "");
   // Drop read-only segments, then scan what remains as one text: AppleScript and
   // JXA payloads span `;` and `|` inside their quotes, so remaining segments are
   // rejoined rather than judged one by one.

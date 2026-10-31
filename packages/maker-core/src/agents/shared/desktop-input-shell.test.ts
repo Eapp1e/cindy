@@ -43,6 +43,14 @@ describe("isShellDesktopInputCommand", () => {
     `xvkbd -text x`,
     `nircmd.exe sendkeypress ctrl+v`,
     `AutoHotkey.exe click.ahk`,
+    // review round 10: line continuations are deleted by the shell before it parses
+    `xdotool \\\nclick 1`,
+    `/Users/dash/.local/bin/cua-driver \\\n  click --pid 1 --x 5 --y 5`,
+    // review round 10: GNU sed executes `e` with any address or range; only print-only scripts are read-only
+    `sed -n '1e xdotool click 1' /etc/hosts`,
+    `sed -n '2,4{e cliclick c:1,1\n}' f.txt`,
+    `sed -n 's/x/y/e;p' f.txt && cliclick c:1,1`,
+    `sed --expression='1e cliclick c:1,1' f.txt`,
     // review round 9: writes through the accessibility tree are input too
     `osascript -e 'tell application "System Events" to set value of text field 1 of window 1 of process "Cindy" to "secret"'`,
     `osascript -e 'tell application "System Events" to tell process "Cindy" to perform action "AXPress" of button 1 of window 1'`,
@@ -89,6 +97,10 @@ describe("isShellDesktopInputCommand", () => {
     `git -C /repo log --oneline -S SendInput`,
     `rg cliclick /opt/homebrew/bin/cliclick.md`,
     `rg "$(pwd)/CGEventPost" src`,
+    // review round 10: print-only sed over files that mention the APIs
+    `sed -n '1,5p' apps/desktop/src/main/mcp-integrations/computer.ts`,
+    `sed -n '/CGEventPost/,/^}/p' computer.ts`,
+    `sed -n '$p' notes.md`,
     // review round 9: reading accessibility values and process state stays allowed
     `osascript -e 'tell application "System Events" to get value of text field 1 of window 1 of process "Cindy"'`,
     `osascript -e 'tell application "System Events" to get the name of every process whose visible is true'`,
