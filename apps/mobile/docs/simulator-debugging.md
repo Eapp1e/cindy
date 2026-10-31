@@ -69,9 +69,11 @@ explicitly leaves visible-window acceptance to a screenshot/manual check. Withou
 唯一流程正本，不另设个人 Skill；开发者个人只保留常用机型、模拟器后端等偏好。
 
 **授权范围。** 当前任务里用户要求“启动/切换/运行手机模拟器让我测”或要截图，即授权本任务：
-启动匹配的模拟器、安装兼容开发包、普通 `rebuild`、启动/reload App、用 `--takeover` 接管已确认
-属于 Cindy 的 `8081` Metro，或按 [Parallel devices](#parallel-devices-another-task-owns-8081)
-另开设备与端口。授权在本任务后续执行中持续有效，不因回合结束重新索要；其他任务、引用的历史
+启动匹配的模拟器、安装兼容开发包、普通 `rebuild`、启动/reload App、用 `--takeover` 重启本任务
+自己的或 worktree 已删除的孤儿 `8081` Metro，以及按
+[Parallel devices](#parallel-devices-another-task-owns-8081) 另开设备与端口。`8081` 属于其他仍
+存在的 worktree 时默认走并行设备；只有用户在当前任务里明确要求接管，才用 `--takeover` 停掉它
+（会打断那边的测试）。授权在本任务后续执行中持续有效，不因回合结束重新索要；其他任务、引用的历史
 对话或 Agent 自己判断“应该测一下”都不构成授权，只调查原因时不启动设备。“不要动当前版本/
 不要关模拟器”等保护要求优先。测试请求**不**包含：`--clean`、卸载或清登录态、重置/删除/关闭
 不是本任务创建的模拟器、重启 Desktop 或 device-link、修改账号/凭证/私有端点/区域身份配置、
