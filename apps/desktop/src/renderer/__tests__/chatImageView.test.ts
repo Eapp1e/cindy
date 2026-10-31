@@ -37,6 +37,7 @@ vi.mock('../components/chat/ImageMissingPlaceholder', async (importOriginal) => 
 
 import { ChatImageView } from '../components/chat/ChatImageView';
 import { prepareShareMessageClone } from '../lib/shareConversationImage';
+import { activateInlineLinkFromKeyboard } from '../components/chat/linkInteraction';
 
 afterEach(() => {
   cleanup();
@@ -96,6 +97,53 @@ describe('ChatImageView', () => {
     rerender(React.createElement(ChatImageView, { ...props, src: 'next.png' }));
     expect(screen.getByAltText('sample.png').getAttribute('aria-describedby')).toBeNull();
     expect(screen.queryByText('chat.media.longImagePreview')).toBeNull();
+  });
+
+  // #8214 review, unit: an image may be wrapped by a Markdown target link.
+  // Retry must cancel both the anchor's default action and bubbling activation.
+  it('keeps a linked image retry from opening its target', async () => {
+    vi.stubGlobal('electronAPI', {
+      readCachedImageAsBase64: vi.fn().mockResolvedValue({ base64: 'aW1hZ2U=', mimeType: 'image/png' }),
+    });
+    const openTarget = vi.fn((event: React.MouseEvent) => event.preventDefault());
+    render(React.createElement('a', {
+      href: 'https://example.com', onClick: openTarget, onAuxClick: openTarget,
+      onKeyDown: activateInlineLinkFromKeyboard,
+    },
+      React.createElement(ChatImageView, {
+        src: 'cindy-media://blobs/a.png', filename: 'a.png', variant: 'tool-output',
+      })));
+    fireEvent.error(screen.getByAltText('a.png'));
+    const retry = await screen.findByRole('button', { name: 'commonUi.retry: a.png' });
+    fireEvent.keyDown(retry, { key: 'Enter' });
+    fireEvent.keyDown(retry, { key: ' ' });
+    const middleClick = new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true });
+    fireEvent(retry, middleClick);
+    expect(middleClick.defaultPrevented).toBe(true);
+    expect(openTarget).not.toHaveBeenCalled();
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    fireEvent(retry, click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(openTarget).not.toHaveBeenCalled();
+    expect(screen.getByAltText('a.png')).toBeTruthy();
+  });
+
+  // #8214 review, unit: export uses the production clone path and must keep
+  // the error/filename while removing only the live retry action.
+  it('omits the image retry control from its share clone', async () => {
+    vi.stubGlobal('electronAPI', {
+      readCachedImageAsBase64: vi.fn().mockResolvedValue({ base64: 'aW1hZ2U=', mimeType: 'image/png' }),
+    });
+    const { container } = render(React.createElement(ChatImageView, {
+      src: 'cindy-media://blobs/a.png', filename: 'a.png', variant: 'tool-output',
+    }));
+    fireEvent.error(screen.getByAltText('a.png'));
+    await screen.findByRole('button', { name: 'commonUi.retry: a.png' });
+    const clone = prepareShareMessageClone(container);
+    expect(clone?.querySelector('button')).toBeNull();
+    expect(clone?.textContent).toContain('chat.imageMissing.unavailable');
+    expect(clone?.textContent).toContain('a.png');
+    expect(screen.getByRole('button', { name: 'commonUi.retry: a.png' })).toBeTruthy();
   });
 
   describe.each(['user-attached', 'tool-output'] as const)('%s diagnostics', (variant) => {

@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Tooltip } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
+import { SHARE_EXCLUDE_ATTR } from '@/lib/shareConversationImage';
 
 interface ImageMissingPlaceholderProps {
   status?: 'loading' | 'missing' | 'unavailable';
@@ -75,11 +76,25 @@ export function ImageMissingPlaceholder({
       </Tooltip.Root>
       {status === 'unavailable' && onRetry && (
         <Button
+          {...{ [SHARE_EXCLUDE_ATTR]: '' }}
           type="button"
           variant="secondary"
           size="sm"
           aria-label={`${t('commonUi.retry')}: ${filename}`}
-          onClick={onRetry}
+          onKeyDown={(event) => {
+            // Linked images also activate their outer target on Enter/Space.
+            // Keep the button's native keyboard click without activating that link.
+            if (event.key === 'Enter' || event.key === ' ') event.stopPropagation();
+          }}
+          onAuxClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onRetry();
+          }}
         >
           {t('commonUi.retry')}
         </Button>
