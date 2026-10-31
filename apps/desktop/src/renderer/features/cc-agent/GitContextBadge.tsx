@@ -7,7 +7,7 @@
  *     worktree 已删时兜底)→ working_dir HEAD(低信任,仅在无 PR 时最后兜底)。
  *     HEAD 变化(用户/agent 切分支)由 useSessionGitContext 实时推送刷新。
  *   - PR chip(最多 MAX_STATUS_QUERIES 条，固定与手动优先级在前):
- *     整组悬停显示 PR 信息，点击打开 PR；独立更多入口管理关联。
+ *     整组悬停显示 PR 信息，点击打开 PR；悬停面板右上角齿轮进入关联管理(共享访客除外)。
  *
  * PR 状态视觉:用 lucide 图标形状区分四态(色弱友好),颜色只用已注册 token:
  *   open   GitPullRequest        --diff-add-fg(语义绿,规则 16 豁免色)
@@ -31,6 +31,7 @@ import {
   Clock,
   CircleHelp,
   CircleMinus,
+  Settings,
 } from 'lucide-react';
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -42,6 +43,7 @@ import { sessionPrUrl } from '@cindy/maker-shared';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import { SessionPrManager } from './SessionPrManager';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
+import { ChromeIconButton } from '@/components/title-bar/ChromeIconButton';
 import type { Session } from '@/lib/ccAgent.types';
 import type { PrStatusKind, PrStatusResult, SessionPrRef } from '@/lib/gitContext.types';
 import { useSessionGitContext } from '@/hooks/useSessionGitContext';
@@ -128,40 +130,27 @@ function GitContextBadgeContent({ session }: { session: Session }) {
                 ? 'max-[700px]:hidden'
                 : 'max-[1000px]:hidden'
           }
-          remoteHostId={session.remoteHostId}
-          deviceLinkDeviceId={session.deviceLinkDeviceId}
-          readOnly={session.source === 'review'}
+          session={session}
           prRef={ref}
           status={prStatuses.get(prStatusKey(ref))}
           summary={summary}
           setSummary={setSummary}
         />
       ))}
-      {!isSharedTaskPeer(session.deviceLinkDeviceId ?? '') && (
-        <SessionPrManager
-          key={session.id}
-          session={session}
-          readOnly={session.source === 'review'}
-        />
-      )}
     </div>
   );
 }
 
 function PrChip({
   className,
-  remoteHostId,
-  deviceLinkDeviceId,
-  readOnly,
+  session,
   prRef,
   status,
   summary,
   setSummary,
 }: {
   className?: string;
-  remoteHostId?: string | null;
-  deviceLinkDeviceId?: string | null;
-  readOnly?: boolean;
+  session: Session;
   prRef: SessionPrRef;
   status: PrStatusResult | undefined;
   summary: PrSummary;
@@ -169,6 +158,11 @@ function PrChip({
 }) {
   const { t } = useTranslation();
   const [setupOpen, setSetupOpen] = useState(false);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const { remoteHostId, deviceLinkDeviceId } = session;
+  const readOnly = session.source === 'review';
+  // The shared-task host rejects association reads from guests.
+  const canManage = !isSharedTaskPeer(deviceLinkDeviceId ?? '');
   const summaryOpen = summary === prRef.id;
   const triggerRef = useRef<HTMLButtonElement>(null);
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -269,6 +263,13 @@ function PrChip({
           onClose={() => setSetupOpen(false)}
         />
       )}
+      {managerOpen && (
+        <SessionPrManager
+          session={session}
+          anchorRef={triggerRef}
+          onClose={() => setManagerOpen(false)}
+        />
+      )}
       <Popover
         open={summaryOpen}
         onOpenChange={(open) => {
@@ -287,7 +288,7 @@ function PrChip({
               triggerHovered.current = true;
               cancelClose();
               cancelOpen();
-              if (suppressHover.current) return;
+              if (suppressHover.current || managerOpen) return;
               if (summary !== null) {
                 setSummary(prRef.id);
               } else {
@@ -397,27 +398,41 @@ function PrChip({
             className={cn('w-[320px] max-w-[calc(100vw-16px)] p-4', className)}
             aria-label={t('ccAgent.gitContext.pr.summaryAria', { number: prRef.prNumber })}
           >
-            <a
-              href={sessionPrUrl(prRef)}
-              onClick={(event) => {
-                event.preventDefault();
-                void window.electronAPI.openExternal(sessionPrUrl(prRef));
-              }}
-              className="group block min-w-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-            >
-              <span className="flex items-center gap-1 text-12 text-[var(--text-secondary)]">
-                <Icon size={12} strokeWidth={1.5} className="shrink-0" style={{ color }} />
-                <span className="min-w-0 break-words group-hover:underline">
-                  {prRef.owner}/{prRef.repo} #{prRef.prNumber}
-                  {status?.ok && <> · {statusLine}</>}
+            <div className="flex items-start gap-2">
+              <a
+                href={sessionPrUrl(prRef)}
+                onClick={(event) => {
+                  event.preventDefault();
+                  void window.electronAPI.openExternal(sessionPrUrl(prRef));
+                }}
+                className="group block min-w-0 flex-1 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+              >
+                <span className="flex items-center gap-1 text-12 text-[var(--text-secondary)]">
+                  <Icon size={12} strokeWidth={1.5} className="shrink-0" style={{ color }} />
+                  <span className="min-w-0 break-words group-hover:underline">
+                    {prRef.owner}/{prRef.repo} #{prRef.prNumber}
+                    {status?.ok && <> · {statusLine}</>}
+                  </span>
                 </span>
-              </span>
-              {status?.ok && status.title.trim() && (
-                <span className="mt-1 block break-words text-14 font-medium leading-snug text-[var(--text-primary)] group-hover:underline">
-                  {status.title}
-                </span>
+                {status?.ok && status.title.trim() && (
+                  <span className="mt-1 block break-words text-14 font-medium leading-snug text-[var(--text-primary)] group-hover:underline">
+                    {status.title}
+                  </span>
+                )}
+              </a>
+              {canManage && (
+                <ChromeIconButton
+                  aria-label={t('ccAgent.gitContext.pr.manage.title')}
+                  className="-mr-2 -mt-1.5 shrink-0"
+                  onClick={() => {
+                    closeSummary();
+                    setManagerOpen(true);
+                  }}
+                >
+                  <Settings size={14} />
+                </ChromeIconButton>
               )}
-            </a>
+            </div>
             {!status?.ok && (
               <div className="mt-3 space-y-2 text-13 text-[var(--text-secondary)]">
                 <div>{statusLine}</div>
