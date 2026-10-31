@@ -128,6 +128,21 @@ export function isHarnessOwnedCapabilitySource(
   );
 }
 
+/**
+ * A `user-mcp` route replaces a server registered on THIS computer with a Cindy host
+ * capability that exists only in a local in-process runtime. A remote (SSH) runtime
+ * reads the remote user's own MCP config and has no such replacement, so the denial
+ * must not reach it: dropping the server there would remove a working capability
+ * and offer nothing in its place.
+ */
+export function withoutUserMcpRoutes(
+  policy: CapabilityRoutingPolicy | undefined,
+): CapabilityRoutingPolicy | undefined {
+  if (!policy) return policy;
+  const overrides = policy.overrides.filter((route) => route.source.kind !== 'user-mcp');
+  return overrides.length === policy.overrides.length ? policy : { overrides };
+}
+
 export function findCapabilityRouteOverride(
   policy: CapabilityRoutingPolicy | undefined,
   target: CapabilityRouteTarget,

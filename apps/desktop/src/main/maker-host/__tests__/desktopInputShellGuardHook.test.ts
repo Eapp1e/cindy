@@ -51,7 +51,10 @@ describe('createDesktopInputShellGuardHooks', () => {
     if (!hook) throw new Error('expected guard hook');
     const secret = 'hunter2-private-message';
     await hook(
-      preToolUseInput('Bash', `osascript -e 'tell application "System Events" to keystroke "${secret}"'`),
+      preToolUseInput(
+        'Bash',
+        `osascript -e 'tell application "System Events" to keystroke "${secret}"'`,
+      ),
       'tool-1',
       hookOptions,
     );

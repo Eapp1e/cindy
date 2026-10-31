@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CapabilityRoutingPolicy } from '../../../types/capability-routing.js';
+import { withoutUserMcpRoutes } from '../../../types/capability-routing.js';
 import {
   buildClaudeAskUserQuestionCallerProvenanceHooks,
   buildClaudeDeniedMcpServers,
@@ -194,6 +195,18 @@ describe('Claude disabled built-in surfaces', () => {
   it('maps disabled tools to SDK disallowedTools', () => {
     expect(buildClaudeDisallowedTools(policy)).toEqual(['Artifact']);
     expect(buildClaudeDisallowedTools(undefined)).toEqual([]);
+  });
+
+  it('withoutUserMcpRoutes drops only user-mcp routes and keeps the same object when there are none', () => {
+    const user = {
+      capabilityId: 'computer-use',
+      source: { kind: 'user-mcp' as const, harness: 'claude-code', surface: 'mcp' as const, id: 'cua-driver' },
+      invocation: 'disabled' as const,
+    };
+    const mixed = { overrides: [...policy.overrides, user] };
+    expect(withoutUserMcpRoutes(mixed)?.overrides).toEqual(policy.overrides);
+    expect(withoutUserMcpRoutes(policy)).toBe(policy);
+    expect(withoutUserMcpRoutes(undefined)).toBeUndefined();
   });
 
   it('denies a disabled MCP server by name so its instructions leave the prompt too', () => {
