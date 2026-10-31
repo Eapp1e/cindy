@@ -161,9 +161,10 @@
   跳过）；`--dry-run` 不连 OSS、不联网，只打印 key、sha256 与 CDN 地址。**发版前检查项**：global 与 cn 两份
   `build-info.json` 的 `node scripts/publish-page-manual.mjs --build-info=<路径> --check-cdn` 都通过，即本版本的手册已在
   两个区域线上；只读校验的 CDN 地址取法同壁纸。同一 key 只有一种内容，远端已有相同内容时
-  不再上传，上传仍带 `x-oss-forbid-overwrite`；该检查不进 CI，避免 CI 依赖外网。客户端把手册地址交给插件目前
-  暂不启用；启用后每个发版版本都必须发布一次，否则该版本拿到的地址会 404，所以在那部分上线前要先把这一步接进
-  发版流程。
+  不再上传，上传仍带 `x-oss-forbid-overwrite`；该检查不进 CI，避免 CI 依赖外网。客户端开始在 `cindy.fetch` 中自动
+  带手册地址（`Cindy-MCP-Apps-Manual` / `-Sha256` 请求头，`apps/desktop/src/main/cindy-brain/mcpAppsManualHeaders.ts`）
+  后，**每个发版版本、每个区域都必须发布手册**，否则该版本带出去的地址会 404；因此带地址的客户端上线前，必须先把
+  这一步接进发版流程。
 - 伙伴头像的本机副本（2026-10-17 用户裁决：读过的头像在本机缓存一份，显示前先读缓存）：另一台电脑上
   伙伴的 `cindy-media://blobs/…` 头像与云端伙伴身份的 `https://` 公开头像，经 `companion-cloud/avatarCache.ts`
   复用集成缓存的索引（`integration-cache` 引用行，键 `companion-avatar:…`，`isCache: true`）入仓，由回收器按
