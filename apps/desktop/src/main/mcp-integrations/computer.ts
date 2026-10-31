@@ -1601,15 +1601,15 @@ function inferWindowIdentity(
   workspaceRootCache: Map<string, string | undefined>,
 ): WindowIdentity {
   const labels: string[] = [];
+  // Every kind comes from the app and its process only. A window title is page or
+  // document content: a Chrome tab titled "Node.js documentation" or "iOS Simulator
+  // guide" must not be classified (or routed) as the thing it talks about.
   const haystack = [
     typeof window.app_name === 'string' ? window.app_name : '',
-    typeof window.title === 'string' ? window.title : '',
     processInfo?.name ?? '',
     processInfo?.command ?? '',
     processInfo?.executable ?? '',
   ].join(' ').toLowerCase();
-  // Simulator identity comes from the app and its executable only. A browser tab
-  // or document titled "Simulator" must not be told to stop using synthetic input.
   const appName = (typeof window.app_name === 'string' ? window.app_name : '').trim().toLowerCase();
   const executableText = `${processInfo?.name ?? ''} ${processInfo?.command ?? ''} ${processInfo?.executable ?? ''}`.toLowerCase();
   const isIosSimulator =
@@ -3548,13 +3548,14 @@ const inputObservations = new Map<string, { windows: Map<string, number | symbol
  */
 export const USER_INPUT_ACTIVE_WINDOW_MS = 3_000;
 /**
- * Slack after the Agent's own dispatch returned during which a system input is
- * still taken as the Agent's: the idle clock is floored to whole seconds and the
- * driver delivers a dispatched event up to about a second later (2026-10-31
- * smoke run: a background click dispatched 2.2 s earlier was read as "input 1 s
- * ago" and refused the next foreground action).
+ * The tail after an Agent HID action returns in which the driver may still be
+ * delivering its own events (2026-10-31 smoke run: a background click that had
+ * returned 2.2 s earlier left the idle clock at 1 s). Input inside this tail is
+ * indistinguishable from the Agent's and is attributed to it; the cost is that a
+ * person's input within this long of an Agent action is not seen by one check.
+ * It is kept at the smallest value the smoke run needs.
  */
-const AGENT_INPUT_ATTRIBUTION_SLACK_MS = 2_500;
+const AGENT_INPUT_ATTRIBUTION_SLACK_MS = 1_500;
 let lastAgentInputEndedAt = 0;
 let agentInputsInFlight = 0;
 let screenLockedByEvent: boolean | undefined;
@@ -3633,9 +3634,11 @@ function msSinceForeignDesktopInput(now = Date.now()): number | null {
   if (!Number.isFinite(idleSeconds) || idleSeconds < 0) return null;
   // Another Agent input is still being delivered: its events are ours.
   if (agentInputsInFlight > 0) return Number.POSITIVE_INFINITY;
-  // The idle clock is floored, so the input happened no earlier than this.
-  const earliestInputAt = now - (idleSeconds + 1) * 1000;
-  if (earliestInputAt <= lastAgentInputEndedAt + AGENT_INPUT_ATTRIBUTION_SLACK_MS) return Number.POSITIVE_INFINITY;
+  // The idle clock is floored to whole seconds: the last input happened at or before
+  // this instant, and at most a second earlier. Only when even the latest possible
+  // moment lies within the Agent's delivery tail is the whole range the Agent's.
+  const latestInputAt = now - idleSeconds * 1000;
+  if (latestInputAt <= lastAgentInputEndedAt + AGENT_INPUT_ATTRIBUTION_SLACK_MS) return Number.POSITIVE_INFINITY;
   return idleSeconds * 1000;
 }
 

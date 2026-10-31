@@ -23,21 +23,21 @@ const SHELL_DESKTOP_INPUT_PATTERNS: readonly RegExp[] = [
   // macOS third-party click / key CLIs.
   // Optionally path-qualified (/opt/homebrew/bin/cliclick); the name must end the
   // token so a file such as docs/cliclick-notes.md is not a command.
-  /(?:^|[\s|&;(`$])(?:\S*\/)?cliclick(?=\s|$)/i,
+  /(?:^|[\s|&;(`$'"])(?:\S*\/)?cliclick(?=[\s'"]|$)/i,
   // CoreGraphics event synthesis from inline Swift / Python / JXA.
   /\bCGEventPost\b|\bCGEventCreate(?:Mouse|Keyboard|ScrollWheel)Event\b|\bCGEvent\s*\(\s*(?:mouseEventSource|keyboardEventSource|scrollWheelEvent2Source)/i,
   // Linux / Windows equivalents.
-  /(?:^|[\s|&;(`$])(?:\S*\/)?(?:xdotool|ydotool|xte)\s+(?:key|type|click|mousemove|mousedown|mouseup)\b/i,
+  /(?:^|[\s|&;(`$'"])(?:\S*\/)?(?:xdotool|ydotool|xte)\s+(?:key|type|click|mousemove|mousedown|mouseup)\b/i,
   /\bSendKeys\b|\bSendInput\b|\bmouse_event\b|\bkeybd_event\b/i,
   // Library and executable entry points, one inventory so the list is complete by
   // construction rather than by review rounds: Python (pyautogui, pynput,
   // pydirectinput), Node (robotjs, nut-js), Wayland / X11 (wtype, dotool, xvkbd),
   // Windows (AutoHotkey, nircmd).
   /\b(?:pyautogui|pynput|pydirectinput|robotjs|nut-js|autohotkey)\b|@nut-tree\b/i,
-  /(?:^|[\s|&;(`$])(?:\S*\/)?(?:wtype|dotoolc?|xvkbd|nircmdc?)(?:\.exe)?(?=\s|$)/i,
+  /(?:^|[\s|&;(`$'"])(?:\S*\/)?(?:wtype|dotoolc?|xvkbd|nircmdc?)(?:\.exe)?(?=[\s'"]|$)/i,
   // The driver binary itself: same engine, but the native CLI / MCP skips the
   // Cindy session, guards and result verification.
-  /(?:^|[\s|&;(`$/])cua-driver\s+(?!--version\b|version\b|status\b|health\b)[a-z]/i,
+  /(?:^|[\s|&;(`$/'"])cua-driver\s+(?!--version\b|version\b|status\b|health\b)[a-z]/i,
 ];
 
 const READ_ONLY_HEADS: ReadonlySet<string> = new Set([
@@ -54,6 +54,19 @@ const READ_ONLY_HEADS: ReadonlySet<string> = new Set([
   "more",
   "bat",
   "wc",
+  // Pure readers and formatters: their arguments are patterns or file names.
+  "nl",
+  "cut",
+  "sort",
+  "uniq",
+  "diff",
+  "jq",
+  "ls",
+  "stat",
+  "file",
+  "xxd",
+  "od",
+  "strings",
 ]);
 /** Package managers only fetch or list code; installing `pyautogui` synthesizes nothing. */
 const PACKAGE_MANAGERS: ReadonlySet<string> = new Set([
@@ -105,6 +118,19 @@ function isReadOnlySegment(segment: string): boolean {
   const head = (tokens[index] ?? "").split("/").pop() ?? "";
   if (READ_ONLY_HEADS.has(head)) return true;
   if (head === "cat") return !/>|<</.test(segment);
+  // `sed -n '/CGEventPost/p' file` only prints; `-i` / `--in-place` and the `w` / `e`
+  // commands write or execute, so those stay in scope.
+  if (head === "sed") {
+    const args = tokens.slice(index + 1);
+    const quiet = args.some((token) => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(token));
+    const writes = args.some(
+      (token) =>
+        /^-[a-zA-Z]*i/.test(token) ||
+        token === "--in-place" ||
+        token.startsWith("--in-place="),
+    );
+    return quiet && !writes && !/(?:^|[;{\s'"/])[we]\s/.test(args.join(" "));
+  }
   if (PACKAGE_MANAGERS.has(head)) {
     const sub =
       tokens.slice(index + 1).find((token) => !token.startsWith("-")) ?? "";

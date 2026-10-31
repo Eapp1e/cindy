@@ -693,6 +693,21 @@ describe('computer mcp integration', () => {
     expect(byPid[55]).not.toBe('ios-simulator');
   });
 
+  // Review (#8227 round 8): a title must not out-rank the real application.
+  it('classifies a browser by its process even when the tab title names node or vite', async () => {
+    mcpCallToolMock.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '{"ok":true,"windows":[{"pid":99,"window_id":11,"app_name":"Google Chrome","title":"Node.js documentation – npm and vite guide"}]}' }],
+    });
+    mockProcessSnapshotSpawn([
+      { pid: 99, name: 'Google Chrome', command: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' },
+    ]);
+    const result = await callComputerDriverTool('list_windows', { session: 'title-node' }, { sessionId: 'title-node' }) as {
+      windows: Array<{ identity: { kind: string; hints?: string[] } }>;
+    };
+    expect(result.windows[0]!.identity.kind).toBe('browser');
+    expect(result.windows[0]!.identity.hints).toEqual([expect.stringContaining('set_value')]);
+  });
+
   it('filters list_windows locally by process name', async () => {
     mcpCallToolMock.mockResolvedValueOnce({
       content: [{ type: 'text', text: '{"ok":true,"windows":[{"pid":123,"window_id":7,"app_name":"Electron","title":"App"},{"pid":456,"window_id":8,"app_name":"Safari","title":"Docs"}]}' }],
@@ -4447,6 +4462,22 @@ describe('foreground input while the person is using this computer', () => {
         .rejects.toMatchObject({ code: expect.stringMatching(/USER_INPUT_ACTIVE|STALE_SNAPSHOT/) });
       // A fresh read lets the check run on its own merits.
       await callComputerDriverTool('get_window_state', target, context);
+      await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'foreground' }, context))
+        .rejects.toMatchObject({ code: 'USER_INPUT_ACTIVE' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review (#8227 round 8): input that follows an Agent action by more than the delivery
+  // tail is a person's, however recent the action was.
+  it('treats input after the delivery tail of an Agent action as the person\'s', async () => {
+    vi.useFakeTimers();
+    try {
+      await callComputerDriverTool('get_window_state', target, context);
+      await callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'background' }, context);
+      vi.advanceTimersByTime(2_600);
+      powerMonitorState.idleSeconds = 0;
       await expect(callComputerDriverTool('click', { ...target, x: 1, y: 1, delivery_mode: 'foreground' }, context))
         .rejects.toMatchObject({ code: 'USER_INPUT_ACTIVE' });
     } finally {

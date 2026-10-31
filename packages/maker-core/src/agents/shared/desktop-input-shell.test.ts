@@ -43,6 +43,14 @@ describe("isShellDesktopInputCommand", () => {
     `xvkbd -text x`,
     `nircmd.exe sendkeypress ctrl+v`,
     `AutoHotkey.exe click.ahk`,
+    // review round 8: the executable sits inside a wrapper's command string
+    `bash -c 'cliclick c:1,1'`,
+    `sh -c "xdotool click 1"`,
+    `eval 'wtype x'`,
+    `zsh -lc 'cd /tmp && /opt/homebrew/bin/cliclick c:5,5'`,
+    // sed that writes or executes is not read-only
+    `sed -i '' 's/a/b/' f.txt; cliclick c:1,1`,
+    `sed -n 'w /tmp/click.swift' in.txt && swift /tmp/click.swift # CGEventPost`,
     // review round 7: executable names resolve in any case on macOS / Windows
     `/opt/homebrew/bin/CLICLICK c:100,100`,
     `/Users/dash/.local/bin/CUA-DRIVER click --pid 1`,
@@ -77,6 +85,11 @@ describe("isShellDesktopInputCommand", () => {
     `git -C /repo log --oneline -S SendInput`,
     `rg cliclick /opt/homebrew/bin/cliclick.md`,
     `rg "$(pwd)/CGEventPost" src`,
+    // review round 8: read-only sed and other pure readers over files that mention the APIs
+    `sed -n '/CGEventPost/p' apps/desktop/src/main/mcp-integrations/computer.ts`,
+    `sed -nE '1,40p;/SendKeys/p' scripts/notes.md`,
+    `jq '.scripts | keys' package.json | sort | uniq`,
+    `ls docs | cut -d. -f1`,
     // review round 7: separators inside quotes belong to one argument
     `rg 'foo|CGEventPost' .`,
     `grep -E "SendKeys|SendInput; keybd_event" -r src`,
