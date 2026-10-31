@@ -65,12 +65,30 @@ explicitly leaves visible-window acceptance to a screenshot/manual check. Withou
 
 ## 截图与当前版本测试
 
-“给我看这次手机改动的截图”与启动当前版本测试共用此流程。设备选择、接管和系统工具安装的
-授权来自用户及个人工作流；本节只定义通用操作和证据，不指定某个开发者的区域、手机或账号。
+“给我看这次手机改动的截图”与启动当前版本测试共用此流程。本节是 Agent 做手机模拟器测试的
+唯一流程正本，不另设个人 Skill；开发者个人只保留常用机型、模拟器后端等偏好。
 
-1. 固定本任务的 worktree，读取 `git status --short --branch`。使用任务明确指定的机型，
-   未指定时才使用个人选择。先枚举设备，选择精确 UDID；已有设备必须符合本次机型要求，不能
-   因另一型号已经启动就把它当作目标。后续命令保持相同 region、UDID、模拟器后端和 mock 开关。
+**授权范围。** 当前任务里用户要求“启动/切换/运行手机模拟器让我测”或要截图，即授权本任务：
+启动匹配的模拟器、安装兼容开发包、普通 `rebuild`、启动/reload App、用 `--takeover` 接管已确认
+属于 Cindy 的 `8081` Metro，或按 [Parallel devices](#parallel-devices-another-task-owns-8081)
+另开设备与端口。授权在本任务后续执行中持续有效，不因回合结束重新索要；其他任务、引用的历史
+对话或 Agent 自己判断“应该测一下”都不构成授权，只调查原因时不启动设备。“不要动当前版本/
+不要关模拟器”等保护要求优先。测试请求**不**包含：`--clean`、卸载或清登录态、重置/删除/关闭
+不是本任务创建的模拟器、重启 Desktop 或 device-link、修改账号/凭证/私有端点/区域身份配置、
+安装系统工具或下载 runtime、控制私人真机；需要时只问缺的那一项。普通截图优先 `--mock`。
+
+1. 固定本任务的 worktree：本次明确给出的路径/分支 → 本任务已确认并实际编辑的 worktree →
+   当前工作目录。会话初始目录可能仍是主 checkout；无法唯一确定时询问，不根据其他任务、最近
+   的 Metro、模拟器画面或“看起来最新”的提交猜。读取 `git status --short --branch`，所有
+   `mobile:sim:*` 在目标根目录运行。使用任务明确指定的机型，未指定时才使用个人选择；区域
+   未指定时为 Global（`cn` 只能显式指定）。先枚举设备，选择精确 UDID；已有设备必须符合本次
+   机型要求，不能因另一型号已经启动就把它当作目标，也不使用已知被其他任务占用的设备。机型
+   和个人选择都没有时可复用唯一已启动设备，否则询问。后续命令保持相同 region、UDID、模拟器
+   后端和 mock 开关。
+   Cindy 模拟器经已安装的 `baguette-simulator` 插件操作：先查实时详情和 `devices`，按精确 UDID
+   操作，只用 `environment` 列出的已安装 runtime，同机型有可复用设备时不重复创建。`auto` 在
+   插件未安装或 `RUNTIME_DISABLED` 时回退系统模拟器；固定 `cindy` 时报告不可用，不替用户重新
+   启用插件。
 2. 先运行 `mobile:sim:whoami`，再决定是否需要启动设备、接管 Metro 或准备原生包。
    只检查 UI 时对 `whoami/start/rebuild` 都加 `--mock`。命令保留退出码；`pnpm` 的前后日志
    不属于 JSON，解析时从 stdout 末尾向前找最后一行合法 JSON 对象，不用 `grep | tail` 吞掉失败。
@@ -95,7 +113,10 @@ explicitly leaves visible-window acceptance to a screenshot/manual check. Withou
    `mobile:sim:open` 并以 `whoami --viewer` 检查；两者都需要实际截图/目检页面，窗口进程不等于画面。
 
 截图和 `mobile-identity.json`、本次 bundle 日志放进同一任务产物目录，记录页面/场景、设备
-UDID、方向、主题及未验证项。布局问题按本次要求覆盖横竖屏与深浅色；截图必须来自目标
+UDID、方向、主题及未验证项。交付时简要说明设备/方向/主题、区域与 bundle ID、worktree/分支、
+是否复用 Metro、身份与页面验证结果，并附实际图片；失败时指出具体失败层级和下一步，不把
+device-link 故障说成模拟器故障。旧 checkout 缺少本流程所需入口（`--udid`、`--mock`、
+`--takeover`、原生身份检查、查看器）时报告具体差距，不手工绕过。布局问题按本次要求覆盖横竖屏与深浅色；截图必须来自目标
 版本的实际界面。身份未通过就报告未完成；仅缺目检则报告“版本及 bundle 已验证，画面未目检”。
 本节不授权上传截图到公开平台。
 
