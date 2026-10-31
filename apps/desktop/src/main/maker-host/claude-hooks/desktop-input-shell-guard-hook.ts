@@ -70,16 +70,19 @@ export function createDesktopInputShellGuardHooks(
       });
       return { continue: true };
     }
-    logger?.warn('shell desktop input denied; cindy_computer is the only desktop input entry', {
-      toolUseId: pre.tool_use_id,
-      commandHead: command.slice(0, 120),
-    });
     let enabled = true;
     try {
       enabled = isComputerUseEnabled();
     } catch {
       enabled = true;
     }
+    // Never log the command: the text being typed (`keystroke "…"`) is often exactly the
+    // secret or message the model could not enter securely. Id and size are enough.
+    logger?.warn('shell desktop input denied; cindy_computer is the only desktop input entry', {
+      toolUseId: pre.tool_use_id,
+      commandLength: command.length,
+      computerUseEnabled: enabled,
+    });
     return {
       continue: true,
       hookSpecificOutput: {

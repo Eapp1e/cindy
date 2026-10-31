@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { Logger } from '@cindy/maker-core';
 import { SHELL_DESKTOP_INPUT_DENIAL_REASON } from '@cindy/maker-core';
 
 import {
@@ -40,6 +41,23 @@ describe('createDesktopInputShellGuardHooks', () => {
         permissionDecisionReason: SHELL_DESKTOP_INPUT_DENIAL_REASON,
       },
     });
+  });
+
+  // Review (#8227 round 11): the typed text is the sensitive part; it must not reach the log.
+  it('logs the denial without the command text', async () => {
+    const warn = vi.fn();
+    const logger = { warn } as unknown as Logger;
+    const hook = createDesktopInputShellGuardHooks(() => true, logger).PreToolUse?.[0]?.hooks[0];
+    if (!hook) throw new Error('expected guard hook');
+    const secret = 'hunter2-private-message';
+    await hook(
+      preToolUseInput('Bash', `osascript -e 'tell application "System Events" to keystroke "${secret}"'`),
+      'tool-1',
+      hookOptions,
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+    expect(warn.mock.calls[0]![1]).toMatchObject({ toolUseId: 'tool-1', computerUseEnabled: true });
   });
 
   it('passes other commands, other tools and malformed input through untouched', async () => {
