@@ -43,6 +43,14 @@ describe("isShellDesktopInputCommand", () => {
     `xvkbd -text x`,
     `nircmd.exe sendkeypress ctrl+v`,
     `AutoHotkey.exe click.ahk`,
+    // review round 7: executable names resolve in any case on macOS / Windows
+    `/opt/homebrew/bin/CLICLICK c:100,100`,
+    `/Users/dash/.local/bin/CUA-DRIVER click --pid 1`,
+    `XDOTOOL key Return`,
+    // a newline is a separator: a read-only first line cannot hide the second command
+    `rg foo src\nosascript -e 'tell application "System Events" to keystroke "a"'`,
+    `osascript <<'EOF'\ntell application "System Events"\n  keystroke "a"\nend tell\nEOF`,
+    `cliclick c:1,1 2>&1 | tee out.log`,
     // review: a read-only head still executes the substitutions in its arguments
     `rg "$(osascript -e 'tell application "System Events" to keystroke "x"')" .`,
     "grep -r `cliclick c:1,1` src",
@@ -69,6 +77,11 @@ describe("isShellDesktopInputCommand", () => {
     `git -C /repo log --oneline -S SendInput`,
     `rg cliclick /opt/homebrew/bin/cliclick.md`,
     `rg "$(pwd)/CGEventPost" src`,
+    // review round 7: separators inside quotes belong to one argument
+    `rg 'foo|CGEventPost' .`,
+    `grep -E "SendKeys|SendInput; keybd_event" -r src`,
+    `rg 'a;b' src && git log --oneline -S 'cliclick|xdotool'`,
+    `rg CGEventPost src 2>&1 | head`,
     // installing or listing a library is not synthesis
     `pip install pyautogui`,
     `pnpm add robotjs`,

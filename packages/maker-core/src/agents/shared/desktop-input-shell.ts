@@ -23,12 +23,12 @@ const SHELL_DESKTOP_INPUT_PATTERNS: readonly RegExp[] = [
   // macOS third-party click / key CLIs.
   // Optionally path-qualified (/opt/homebrew/bin/cliclick); the name must end the
   // token so a file such as docs/cliclick-notes.md is not a command.
-  /(?:^|[\s|&;(`$])(?:\S*\/)?cliclick(?=\s|$)/,
+  /(?:^|[\s|&;(`$])(?:\S*\/)?cliclick(?=\s|$)/i,
   // CoreGraphics event synthesis from inline Swift / Python / JXA.
-  /\bCGEventPost\b|\bCGEventCreate(?:Mouse|Keyboard|ScrollWheel)Event\b|\bCGEvent\s*\(\s*(?:mouseEventSource|keyboardEventSource|scrollWheelEvent2Source)/,
+  /\bCGEventPost\b|\bCGEventCreate(?:Mouse|Keyboard|ScrollWheel)Event\b|\bCGEvent\s*\(\s*(?:mouseEventSource|keyboardEventSource|scrollWheelEvent2Source)/i,
   // Linux / Windows equivalents.
-  /(?:^|[\s|&;(`$])(?:\S*\/)?(?:xdotool|ydotool|xte)\s+(?:key|type|click|mousemove|mousedown|mouseup)\b/,
-  /\bSendKeys\b|\bSendInput\b|\bmouse_event\b|\bkeybd_event\b/,
+  /(?:^|[\s|&;(`$])(?:\S*\/)?(?:xdotool|ydotool|xte)\s+(?:key|type|click|mousemove|mousedown|mouseup)\b/i,
+  /\bSendKeys\b|\bSendInput\b|\bmouse_event\b|\bkeybd_event\b/i,
   // Library and executable entry points, one inventory so the list is complete by
   // construction rather than by review rounds: Python (pyautogui, pynput,
   // pydirectinput), Node (robotjs, nut-js), Wayland / X11 (wtype, dotool, xvkbd),
@@ -37,7 +37,7 @@ const SHELL_DESKTOP_INPUT_PATTERNS: readonly RegExp[] = [
   /(?:^|[\s|&;(`$])(?:\S*\/)?(?:wtype|dotoolc?|xvkbd|nircmdc?)(?:\.exe)?(?=\s|$)/i,
   // The driver binary itself: same engine, but the native CLI / MCP skips the
   // Cindy session, guards and result verification.
-  /(?:^|[\s|&;(`$/])cua-driver\s+(?!--version\b|version\b|status\b|health\b)[a-z]/,
+  /(?:^|[\s|&;(`$/])cua-driver\s+(?!--version\b|version\b|status\b|health\b)[a-z]/i,
 ];
 
 const READ_ONLY_HEADS: ReadonlySet<string> = new Set([
@@ -122,6 +122,80 @@ function isReadOnlySegment(segment: string): boolean {
   return false;
 }
 
+/**
+ * Split a shell command at top-level `&&`, `||`, `;`, `|`, `&` and newlines: separators
+ * inside single or double quotes, backslash escapes, `$(…)`, parentheses and
+ * backticks belong to one argument (`rg 'foo|CGEventPost' .` is one segment). A
+ * newline is a separator too, so `rg x⏎osascript …` cannot hide its second command
+ * behind a read-only head. Unbalanced quoting keeps the rest as a single segment.
+ */
+export function splitShellSegments(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let depth = 0;
+  let backtick = false;
+  const flush = () => {
+    if (current.trim().length > 0) segments.push(current);
+    current = "";
+  };
+  for (let index = 0; index < command.length; index += 1) {
+    const ch = command[index]!;
+    const next = command[index + 1];
+    if (ch === "\\" && quote !== "'") {
+      current += ch + (next ?? "");
+      index += 1;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      // $(…) still runs inside double quotes; track it so its own separators stay inside.
+      else if (quote === '"' && ch === "$" && next === "(") {
+        depth += 1;
+        current += "$(";
+        index += 1;
+        continue;
+      } else if (quote === '"' && ch === ")" && depth > 0) depth -= 1;
+      current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "`") {
+      backtick = !backtick;
+      current += ch;
+      continue;
+    }
+    if (ch === "(" || (ch === "$" && next === "(")) {
+      depth += 1;
+      current += ch === "$" ? "$(" : "(";
+      if (ch === "$") index += 1;
+      continue;
+    }
+    if (ch === ")" && depth > 0) {
+      depth -= 1;
+      current += ch;
+      continue;
+    }
+    if (
+      depth === 0 &&
+      !backtick &&
+      (ch === ";" || ch === "|" || ch === "&" || ch === "\n")
+    ) {
+      // `||` and `&&` are one separator; a lone `|` / `&` is another.
+      if ((ch === "|" || ch === "&") && next === ch) index += 1;
+      flush();
+      continue;
+    }
+    current += ch;
+  }
+  flush();
+  return segments;
+}
+
 const SUBSTITUTION_RE =
   /\$\(([^()]*(?:\([^()]*\)[^()]*)*)\)|`([^`]*)`|[<>]\(([^()]*)\)/g;
 
@@ -146,7 +220,7 @@ export function isShellDesktopInputCommand(command: string): boolean {
   // A read-only segment still runs the command substitutions in its arguments
   // (`rg "$(osascript -e '… keystroke …')" .`), so those bodies are scanned too.
   const executedParts: string[] = [];
-  for (const segment of command.split(/&&|\|\||;|\|/)) {
+  for (const segment of splitShellSegments(command)) {
     if (!isReadOnlySegment(segment)) executedParts.push(segment);
     else executedParts.push(...substitutionBodies(segment));
   }
