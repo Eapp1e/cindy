@@ -4093,7 +4093,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         | { type: 'provider-share-join'; link: string }
         | { type: 'chat-invite'; token: string }
         | { type: 'chat-invite-malformed' }
-        | { type: 'settings'; tab: 'voice-input' | 'providers' | 'remote-control'; connect?: string },
+        | { type: 'settings'; tab: 'voice-input' | 'providers' | 'remote-control' | 'builtin-tools'; connect?: string },
     ) => void,
   ): (() => void) =>
     fanOutDeepLinkNavigate((payload) => {
@@ -4217,7 +4217,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     | { type: 'provider-share-join'; link: string }
     | { type: 'chat-invite'; token: string }
     | { type: 'chat-invite-malformed' }
-    | { type: 'settings'; tab: 'voice-input' | 'providers' | 'remote-control'; connect?: string }
+    | { type: 'settings'; tab: 'voice-input' | 'providers' | 'remote-control' | 'builtin-tools'; connect?: string }
     | null
   > => ipcRenderer.invoke('deep-link:take-pending'),
 

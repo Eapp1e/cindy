@@ -3886,7 +3886,10 @@ export function getComputerMcpDeps(options: ComputerMcpDepsOptions = {}): Comput
     },
     callTool: async (name, args, context) => {
       if (options.isComputerUseEnabled && !options.isComputerUseEnabled(context)) {
-        throw new ComputerDriverError('Computer Use is disabled in Settings.');
+        throw new ComputerDriverError(
+          'Computer Use is disabled in Settings. Tell the person this step needs it: Settings → Built-in tools → Computer Use (link: cindy://settings/builtin-tools; macOS also asks for Accessibility and Screen Recording there). Only they can enable it; do not simulate input from the shell.',
+          'COMPUTER_USE_DISABLED',
+        );
       }
       await ensureRuntime();
       return callComputerDriverTool(name, args, context);
