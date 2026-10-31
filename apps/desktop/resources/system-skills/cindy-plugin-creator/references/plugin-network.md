@@ -398,3 +398,11 @@ HTTP 请求的 401 重试或重放行为；不要在工具层自行重复有副�
 没有 total，不把已读取当成已上传。下载进度是实际接收字节。终态由工具结果给出，
 成功和错误都应收起进度条。新响应模式在旧宿主上返回 `{ok:false,...}`，请检查并
 提示升级；最低版本同页面能力的打包下限。
+
+### MCP Apps 页面生成手册头
+
+主机给 `cindy.fetch` 自动加 `Cindy-MCP-Apps-Manual`（手册 CDN 地址，
+`mcp-apps/manual/<客户端版本号>/<sha256>.md`）与 `Cindy-MCP-Apps-Manual-Sha256`，供后端生成页面的模型使用。
+缺省仅当 `callId` 对应工具在 `mcpApps.ui.tools` 中对模型可见（`visibility` 含 `"model"` 或省略）时带；
+`mcpAppsManual: true` 强制带（如 `load_view` 要片段），`false` 不带。只发往已声明主机，跳到其它主机即删；
+自带的同名头被剥除。开发版（0.0.0）、Node 工作进程与旧版 Cindy 不带：后端缺头时用缓存手册，按 sha256 缓存与校验。
