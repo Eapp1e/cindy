@@ -29,6 +29,12 @@ const SHELL_DESKTOP_INPUT_PATTERNS: readonly RegExp[] = [
   // Linux / Windows equivalents.
   /(?:^|[\s|&;(`$])(?:\S*\/)?(?:xdotool|ydotool|xte)\s+(?:key|type|click|mousemove|mousedown|mouseup)\b/,
   /\bSendKeys\b|\bSendInput\b|\bmouse_event\b|\bkeybd_event\b/,
+  // Library and executable entry points, one inventory so the list is complete by
+  // construction rather than by review rounds: Python (pyautogui, pynput,
+  // pydirectinput), Node (robotjs, nut-js), Wayland / X11 (wtype, dotool, xvkbd),
+  // Windows (AutoHotkey, nircmd).
+  /\b(?:pyautogui|pynput|pydirectinput|robotjs|nut-js|autohotkey)\b|@nut-tree\b/i,
+  /(?:^|[\s|&;(`$])(?:\S*\/)?(?:wtype|dotoolc?|xvkbd|nircmdc?)(?:\.exe)?(?=\s|$)/i,
   // The driver binary itself: same engine, but the native CLI / MCP skips the
   // Cindy session, guards and result verification.
   /(?:^|[\s|&;(`$/])cua-driver\s+(?!--version\b|version\b|status\b|health\b)[a-z]/,
@@ -48,6 +54,17 @@ const READ_ONLY_HEADS: ReadonlySet<string> = new Set([
   "more",
   "bat",
   "wc",
+]);
+/** Package managers only fetch or list code; installing `pyautogui` synthesizes nothing. */
+const PACKAGE_MANAGERS: ReadonlySet<string> = new Set([
+  "pip",
+  "pip3",
+  "pipx",
+  "uv",
+  "brew",
+  "npm",
+  "pnpm",
+  "yarn",
 ]);
 const READ_ONLY_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "grep",
@@ -88,6 +105,13 @@ function isReadOnlySegment(segment: string): boolean {
   const head = (tokens[index] ?? "").split("/").pop() ?? "";
   if (READ_ONLY_HEADS.has(head)) return true;
   if (head === "cat") return !/>|<</.test(segment);
+  if (PACKAGE_MANAGERS.has(head)) {
+    const sub =
+      tokens.slice(index + 1).find((token) => !token.startsWith("-")) ?? "";
+    return /^(?:install|add|i|info|show|view|search|list|ls|uninstall|remove|outdated)$/.test(
+      sub,
+    );
+  }
   if (head === "git") {
     const sub =
       tokens

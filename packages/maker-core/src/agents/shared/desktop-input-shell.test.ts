@@ -34,6 +34,15 @@ describe("isShellDesktopInputCommand", () => {
     `osascript -l JavaScript -e 'ObjC.import("CoreGraphics"); $.CGEventPost(0, e)'`,
     `cat > /tmp/click.swift <<'EOF'\nlet e = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)\nEOF`,
     `rg foo src && osascript -e 'tell application "System Events" to keystroke "a"'`,
+    // review round 5: libraries and Wayland / Windows entry points (one inventory)
+    `python3 -c 'import pyautogui; pyautogui.write("x")'`,
+    `python3 -c "from pynput.keyboard import Controller; Controller().type('x')"`,
+    `node -e "require('robotjs').typeString('x')"`,
+    `wtype x`,
+    `/usr/bin/dotool`,
+    `xvkbd -text x`,
+    `nircmd.exe sendkeypress ctrl+v`,
+    `AutoHotkey.exe click.ahk`,
     // review: a read-only head still executes the substitutions in its arguments
     `rg "$(osascript -e 'tell application "System Events" to keystroke "x"')" .`,
     "grep -r `cliclick c:1,1` src",
@@ -60,6 +69,11 @@ describe("isShellDesktopInputCommand", () => {
     `git -C /repo log --oneline -S SendInput`,
     `rg cliclick /opt/homebrew/bin/cliclick.md`,
     `rg "$(pwd)/CGEventPost" src`,
+    // installing or listing a library is not synthesis
+    `pip install pyautogui`,
+    `pnpm add robotjs`,
+    `brew info cliclick`,
+    `rg pyautogui requirements.txt`,
     `git log --grep=SendInput --since "$(date -v-7d +%F)"`,
     `cua-driver --version`,
     `cua-driver status`,
