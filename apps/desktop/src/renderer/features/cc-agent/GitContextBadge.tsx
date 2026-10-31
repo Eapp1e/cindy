@@ -68,6 +68,9 @@ export function GitContextBadge({ session }: { session: Session }) {
 
 function GitContextBadgeContent({ session }: { session: Session }) {
   const [summary, setSummary] = useState<PrSummary>(null);
+  // Owned here, not by a chip: removing the PR it was opened from must not close it.
+  const [managerOpen, setManagerOpen] = useState(false);
+  const badgeRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
   const { head, branchSource, prRefs, prStatuses } = useSessionGitContext(session);
   useEffect(() => {
@@ -99,7 +102,21 @@ function GitContextBadgeContent({ session }: { session: Session }) {
   });
 
   return (
-    <div className="ml-1.5 flex min-w-0 shrink items-center gap-1" style={WINDOW_NO_DRAG_STYLE}>
+    <div
+      ref={badgeRef}
+      className="ml-1.5 flex min-w-0 shrink items-center gap-1"
+      style={WINDOW_NO_DRAG_STYLE}
+    >
+      {managerOpen && (
+        <SessionPrManager
+          session={session}
+          anchorRef={badgeRef}
+          returnFocus={() =>
+            badgeRef.current?.querySelector<HTMLElement>('[data-pr-chip]')?.focus()
+          }
+          onClose={() => setManagerOpen(false)}
+        />
+      )}
       {branchLabel && (
         <Tooltip.Root>
           <Tooltip.Trigger asChild>
@@ -132,6 +149,8 @@ function GitContextBadgeContent({ session }: { session: Session }) {
           }
           session={session}
           prRef={ref}
+          managerOpen={managerOpen}
+          onManage={() => setManagerOpen(true)}
           status={prStatuses.get(prStatusKey(ref))}
           summary={summary}
           setSummary={setSummary}
@@ -145,6 +164,8 @@ function PrChip({
   className,
   session,
   prRef,
+  managerOpen,
+  onManage,
   status,
   summary,
   setSummary,
@@ -152,19 +173,21 @@ function PrChip({
   className?: string;
   session: Session;
   prRef: SessionPrRef;
+  managerOpen: boolean;
+  onManage: () => void;
   status: PrStatusResult | undefined;
   summary: PrSummary;
   setSummary: Dispatch<SetStateAction<PrSummary>>;
 }) {
   const { t } = useTranslation();
   const [setupOpen, setSetupOpen] = useState(false);
-  const [managerOpen, setManagerOpen] = useState(false);
   const { remoteHostId, deviceLinkDeviceId } = session;
   const readOnly = session.source === 'review';
   // The shared-task host rejects association reads from guests.
   const canManage = !isSharedTaskPeer(deviceLinkDeviceId ?? '');
   const summaryOpen = summary === prRef.id;
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressHover = useRef(false);
@@ -263,13 +286,6 @@ function PrChip({
           onClose={() => setSetupOpen(false)}
         />
       )}
-      {managerOpen && (
-        <SessionPrManager
-          session={session}
-          anchorRef={triggerRef}
-          onClose={() => setManagerOpen(false)}
-        />
-      )}
       <Popover
         open={summaryOpen}
         onOpenChange={(open) => {
@@ -282,6 +298,7 @@ function PrChip({
             type="button"
             aria-label={ariaLabel}
             data-pr-guidance={guidance ?? undefined}
+            data-pr-chip=""
             style={WINDOW_NO_DRAG_STYLE}
             onPointerEnter={(event) => {
               if (event.pointerType !== 'mouse') return;
@@ -316,8 +333,10 @@ function PrChip({
                 setSummary(prRef.id);
               }
             }}
-            onBlur={() => {
+            onBlur={(event) => {
               pointerFocus.current = false;
+              // Moving into the panel (to reach the settings gear) keeps it open.
+              if (panelRef.current?.contains(event.relatedTarget as Node | null)) return;
               if (keyboardPreview.current) {
                 keyboardPreview.current = false;
                 closeSummary();
@@ -328,6 +347,14 @@ function PrChip({
               if (event.key === 'Escape') {
                 event.stopPropagation();
                 closeSummary();
+              }
+              // The panel is portaled, so Tab cannot reach it on its own.
+              if (event.key === 'Tab' && !event.shiftKey && keyboardPreview.current) {
+                const gear = panelRef.current?.querySelector<HTMLElement>('[data-pr-manage]');
+                if (gear) {
+                  event.preventDefault();
+                  gear.focus();
+                }
               }
             }}
             onClick={(event) => {
@@ -373,6 +400,16 @@ function PrChip({
         </PopoverTrigger>
         {summaryOpen && (
           <PopoverContent
+            ref={panelRef}
+            onBlur={(event) => {
+              const next = event.relatedTarget as Node | null;
+              if (next && (panelRef.current?.contains(next) || triggerRef.current?.contains(next)))
+                return;
+              if (keyboardPreview.current) {
+                keyboardPreview.current = false;
+                closeSummary();
+              }
+            }}
             onPointerEnter={(event) => {
               if (event.pointerType === 'mouse') cancelClose();
             }}
@@ -383,6 +420,10 @@ function PrChip({
               if (event.key === 'Escape') {
                 event.stopPropagation();
                 closeSummary();
+                triggerRef.current?.focus();
+              } else if (event.key === 'Tab' && event.shiftKey) {
+                event.preventDefault();
+                triggerRef.current?.focus();
               }
             }}
             onOpenAutoFocus={(event) => event.preventDefault()}
@@ -423,10 +464,11 @@ function PrChip({
               {canManage && (
                 <ChromeIconButton
                   aria-label={t('ccAgent.gitContext.pr.manage.title')}
+                  data-pr-manage=""
                   className="-mr-2 -mt-1.5 shrink-0"
                   onClick={() => {
                     closeSummary();
-                    setManagerOpen(true);
+                    onManage();
                   }}
                 >
                   <Settings size={14} />

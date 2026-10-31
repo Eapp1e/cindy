@@ -140,6 +140,56 @@ describe('GitContextBadge', () => {
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
   });
 
+  // Unit regressions for review of #8238: the manager belongs to the badge, not
+  // to the PR it was opened from. Earlier tests only hovered the same chip.
+  it('管理面板不随被移除的PR卸载，打开期间悬停其它PR也不叠出汇总', async () => {
+    const { context, rerender, triggers } = renderHeader();
+    pointer(triggers[0], 'over');
+    advance(300);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'ccAgent.gitContext.pr.manage.title' }));
+    });
+    const manager = () =>
+      screen.queryByRole('dialog', { name: 'ccAgent.gitContext.pr.manage.title' });
+    expect(manager()).toBeTruthy();
+    pointer(triggers[1], 'over');
+    advance(300);
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    gitContextMock.mockReturnValue({ ...context, prRefs: [] });
+    rerender(
+      <Tooltip.Provider>
+        <input aria-label="composer" />
+        <GitContextBadge session={dialogueSession} />
+      </Tooltip.Provider>,
+    );
+    expect(screen.queryAllByRole('button', { name: /pr.openAria/ })).toHaveLength(0);
+    expect(manager()).toBeTruthy();
+  });
+
+  // Unit regression for review of #8238: the gear lives in a portaled panel, so
+  // keyboard users need Tab to hand focus over without the preview closing.
+  it('键盘可从PR徽标Tab进入齿轮，预览不因焦点移入而关闭，Shift+Tab返回', async () => {
+    const {
+      triggers: [trigger],
+    } = renderHeader();
+    vi.spyOn(trigger, 'matches').mockImplementation((selector) => selector === ':focus-visible');
+    fireEvent.focus(trigger);
+    const gear = screen.getByRole('button', { name: 'ccAgent.gitContext.pr.manage.title' });
+    fireEvent.keyDown(trigger, { key: 'Tab' });
+    expect(document.activeElement).toBe(gear);
+    fireEvent.blur(trigger, { relatedTarget: gear });
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    fireEvent.keyDown(gear, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(trigger);
+    gear.focus();
+    await act(async () => {
+      fireEvent.click(gear);
+    });
+    expect(screen.getAllByRole('dialog').map((d) => d.getAttribute('aria-label'))).toEqual([
+      'ccAgent.gitContext.pr.manage.title',
+    ]);
+  });
+
   // Unit: one PR is now one navigation button. Previous tests pinned a popover
   // on click, which is no longer a supported behavior. Minimum timing inputs:
   // first hover 299/300ms, an already-open sibling, leaving and re-entering.
@@ -574,6 +624,7 @@ describe('SessionPrManager', () => {
               <SessionPrManager
                 session={readOnly ? { ...session, source: 'review' } : session}
                 anchorRef={anchor}
+                returnFocus={() => anchor.current?.focus()}
                 onClose={() => setOpen(false)}
               />
             )}

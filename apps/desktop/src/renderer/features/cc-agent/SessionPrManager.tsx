@@ -35,16 +35,21 @@ function statusCandidates(rows: SessionPrRef[]): SessionPrRef[] {
 
 /**
  * Edits associations on their owning host; GitHub itself is never mutated.
- * Opened from the PR hover panel in the task header: mounted only while open
- * and anchored to that PR. Review tasks can only view and open links.
+ * Opened from the PR hover panel in the task header: mounted only while open,
+ * owned by the badge so removing a PR cannot unmount it. Review tasks can only
+ * view and open links.
  */
 export function SessionPrManager({
   session,
   anchorRef,
+  returnFocus,
   onClose,
 }: {
   session: Session;
+  /** Positions the panel; may be a container that outlives any single PR. */
   anchorRef: RefObject<HTMLElement | null>;
+  /** Where focus goes on close, unless the user already moved it. */
+  returnFocus: () => void;
   onClose: () => void;
 }) {
   const readOnly = session.source === 'review';
@@ -378,10 +383,10 @@ export function SessionPrManager({
         <PopoverAnchor virtualRef={anchorRef as RefObject<HTMLElement>} />
         <PopoverContent
           onCloseAutoFocus={(event) => {
-            // There is no trigger to restore; return to the opener unless the
-            // user already moved focus elsewhere.
+            // There is no trigger to restore; the owner picks the target unless
+            // the user already moved focus elsewhere.
             event.preventDefault();
-            if (document.activeElement === document.body) anchorRef.current?.focus();
+            if (document.activeElement === document.body) returnFocus();
           }}
           onKeyDown={(event) => {
             if (event.key === 'Escape') {
