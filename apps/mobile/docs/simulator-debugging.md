@@ -251,14 +251,19 @@ this task its own device and port instead of waiting or taking over:
 1. Use a device no other task is using: create one with `xcrun simctl create`,
    or `xcrun simctl clone` a shut-down device to keep its login. One device
    follows one Metro; never repoint a device another task is testing on.
-2. Install the matching native app on it:
+2. Boot it and wait until ready: `xcrun simctl boot <UDID> && xcrun simctl bootstatus <UDID> -b`
+   (for a device in Cindy's simulator, add `--set "$HOME/Library/Application Support/BaguetteCindy/devices"`
+   after `simctl`). `rebuild` only accepts a booted device and exits before
+   installing otherwise.
+3. Install the matching native app on it:
    `pnpm mobile:sim:rebuild -- --region=<region> --udid <UDID>`. While `8081`
    belongs to another worktree it installs, then exits nonzero with
    `launch blocked`; that is expected, do not rebuild again.
-3. Start this worktree's Metro on a free port and keep it running:
+4. Start this worktree's Metro on a free port and keep it running:
    `pnpm mobile:sim:start -- --region=<region> --port 8082` (same `--mock` choice
-   as the other commands). `whoami` scans `8081`–`8086`, so stay in that range.
-4. Point the device and relaunch the app (`<bundleId>` is `bundleId` in the
+   as the other commands). `whoami` scans `8081`–`8086` plus the explicit
+   `--port`, so any other free port also works.
+5. Point the device and relaunch the app (`<bundleId>` is `bundleId` in the
    `whoami` JSON). For a device in Cindy's simulator, add
    `--set "$HOME/Library/Application Support/BaguetteCindy/devices"` after `simctl`:
 
@@ -267,11 +272,11 @@ this task its own device and port instead of waiting or taking over:
    xcrun simctl terminate <UDID> <bundleId>; xcrun simctl launch <UDID> <bundleId>
    ```
 
-5. Verify all of: `pnpm mobile:sim:whoami -- --region=<region> --udid <UDID> --port 8082`
+6. Verify all of: `pnpm mobile:sim:whoami -- --region=<region> --udid <UDID> --port 8082`
    passes; `xcrun simctl spawn <UDID> defaults read <bundleId> RCT_jsLocation`
    prints `localhost:8082`; the `8082` Metro log shows a new `iOS Bundled …` after
    the launch; and the build label shows `:8082` with this worktree's fingerprint.
-6. Clean up when done: stop this Metro, then on that device run
+7. Clean up when done: stop this Metro, then on that device run
    `defaults delete <bundleId> RCT_jsLocation` (via `simctl spawn`, as above)
    and relaunch. Delete devices you created if they are no longer needed. Do not
    leave a device pointed at a port nobody owns.
